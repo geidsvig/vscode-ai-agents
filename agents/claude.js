@@ -81,13 +81,20 @@ function friendlyModel(id) {
 // tokens = the last request's prompt size (input + cache read + cache creation),
 // i.e. everything currently in the window.
 const TAIL_BYTES = 256 * 1024;
-const infoCache = new Map(); // sessionId -> { mtimeMs, model, contextTokens }
+const infoCache = new Map(); // filePath -> { mtimeMs, model, contextTokens }
 function readSessionInfo(cwd, sessionId) {
-  if (!sessionId) return null;
-  let file, st;
-  try { file = sessionFile(cwd, sessionId); st = fs.statSync(file); }
-  catch (_) { return null; }
-  const cached = infoCache.get(sessionId);
+  // Prefer the record's bound session; fall back to the newest session in the cwd
+  // so an unbound record still shows a model/context gauge (as lastActivity does).
+  let file = null, st = null;
+  if (sessionId) {
+    try { const f = sessionFile(cwd, sessionId); st = fs.statSync(f); file = f; } catch (_) { /* gone */ }
+  }
+  if (!file) {
+    const list = listSessions(cwd);
+    if (list.length) { try { const f = sessionFile(cwd, list[0].id); st = fs.statSync(f); file = f; } catch (_) {} }
+  }
+  if (!file) return null;
+  const cached = infoCache.get(file);
   if (cached && cached.mtimeMs === st.mtimeMs) return cached;
   let model = null, contextTokens = null;
   try {
@@ -112,7 +119,7 @@ function readSessionInfo(cwd, sessionId) {
     }
   } catch (_) { /* unreadable */ }
   const info = { mtimeMs: st.mtimeMs, model, contextTokens };
-  infoCache.set(sessionId, info);
+  infoCache.set(file, info);
   return info;
 }
 function modelName(cwd, sessionId) { const i = readSessionInfo(cwd, sessionId); return i ? i.model : null; }

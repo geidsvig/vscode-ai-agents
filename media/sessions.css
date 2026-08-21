@@ -37,6 +37,7 @@ button.new .plus { font-size: 15px; line-height: 1; }
 /* the session whose terminal is currently active — 1:1 with the focused terminal */
 .card.selected {
   opacity: 1;
+  border-radius: 4px;   /* rounded like the "+ New Agent" button */
   box-shadow: inset 0 0 0 2px var(--vscode-charts-orange, #e8912d);
 }
 
