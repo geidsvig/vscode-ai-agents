@@ -44,14 +44,22 @@ button.new .plus { font-size: 15px; line-height: 1; }
   box-shadow: inset 0 0 0 2px var(--vscode-charts-orange, #e8912d);
 }
 
-/* row 1: project · agent   [last updated] */
+/* row 1: project ............ [last updated] */
 .l1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.l1 .proj { font-weight: 600; white-space: nowrap; }
-.l1 .agent { color: var(--vscode-descriptionForeground); white-space: nowrap; }
-.l1 .sep { color: var(--vscode-descriptionForeground); opacity: 0.5; }
+.l1 .proj { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .l1 .updated { margin-left: auto; color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; }
-.l1 .mascot { display: inline-flex; align-items: center; flex: none; }
-.l1 .mascot svg { height: 14px; width: auto; display: block; }
+
+/* agent row: [mascot / provider] model  <session-id> */
+.lag { display: flex; align-items: center; gap: 6px; margin-top: 2px; min-width: 0; }
+.lag .mascot { display: inline-flex; align-items: center; flex: none; }
+.lag .mascot svg { height: 13px; width: auto; display: block; }
+.lag .agent { color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.lag .sid {
+  margin-left: auto; flex: none;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px; letter-spacing: 0.2px;
+  color: var(--vscode-descriptionForeground); opacity: 0.8; white-space: nowrap;
+}
 
 /* context-usage bar (row 1.5) */
 .ctx { display: flex; align-items: center; gap: 6px; margin-top: 3px; }

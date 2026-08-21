@@ -60,28 +60,36 @@ function findById(idOrNode) {
 }
 
 // --- Terminal orchestration --------------------------------------------------
-function spawn(rec, command, isNew) {
+function spawn(rec, command, isNew, onReady) {
   const term = vscode.window.createTerminal({ name: rec.label, cwd: rec.cwd });
   live.set(rec.id, term);
   term.show(true);
   const autoRun = vscode.workspace.getConfiguration('agentsPanel').get('autoRunResume', true);
   if (command) term.sendText(command, isNew ? true : autoRun);
   refresh();
-  if (isNew) bindSession(rec);
+  if (isNew) bindSession(rec, onReady);
 }
-function bindSession(rec) {
+// Poll for the agent's new session file; binding it also signals the CLI has
+// booted, so `onReady` fires then (used to inject the initial planning prompt).
+function bindSession(rec, onReady) {
   const p = providers[rec.agentId];
-  if (!p || typeof p.newSessionSince !== 'function') return;
+  if (!p || typeof p.newSessionSince !== 'function') { if (onReady) onReady(); return; }
   const since = Date.now();
   let tries = 0;
   const iv = setInterval(() => {
     tries += 1;
     const id = p.newSessionSince(rec.cwd, since);
-    if (id && id !== rec.sessionId) { rec.sessionId = id; persist(); clearInterval(iv); }
+    if (id && id !== rec.sessionId) { rec.sessionId = id; persist(); clearInterval(iv); if (onReady) onReady(); }
     else if (tries >= 30) clearInterval(iv);
   }, 1000);
 }
 const isActive = (rec) => live.has(rec.id);
+// A session's current branch: the live one (which follows in-terminal checkouts)
+// falling back to whatever was persisted. Detached worktrees have none until the
+// agent creates one during planning.
+function currentBranch(rec) {
+  return (meta.get(rec.id) || {}).branch || rec.branch || null;
+}
 
 // Keep the panel's "selected" highlight in lockstep with VS Code's active
 // terminal, so the highlighted session is always the one whose terminal is
@@ -118,9 +126,10 @@ async function refreshGit() {
 async function refreshPR() {
   for (const rec of sessions) {
     const m = meta.get(rec.id);
-    if (!rec.branch || !m || !m.hasRemote) continue;
-    const pr = await gitmod.prView(rec.cwd, rec.branch);
-    if (pr) prCache.set(rec.branch, pr); else prCache.delete(rec.branch);
+    const branch = currentBranch(rec);
+    if (!branch || !m || !m.hasRemote) continue;
+    const pr = await gitmod.prView(rec.cwd, branch);
+    if (pr) prCache.set(branch, pr); else prCache.delete(branch);
     if (pr && pr.merged) maybePromptMerged(rec, pr);
   }
   refresh();
@@ -134,7 +143,7 @@ function computeCards() {
     const m = meta.get(rec.id) || {};
     const active = live.has(rec.id);
     const repoRoot = rec.repoRoot || m.root || null;
-    const branch = m.branch || rec.branch || (m.detached ? 'detached' : '');
+    const branch = m.branch || rec.branch || '';   // '' for a detached (new) worktree — no branch yet
     const promoted = repoRoot ? promo[repoRoot] : null;
     let isMain = false;
     if (promoted) isMain = !!branch && branch === promoted;
@@ -186,6 +195,8 @@ function computeCards() {
       agentId: rec.agentId,
       agentLabel,
       model,
+      sessionId: rec.sessionId || null,
+      sessionShort: rec.sessionId ? rec.sessionId.slice(0, 8) : null,
       branch: branch || '',
       dirty: !!m.dirty,
       status,
@@ -234,25 +245,42 @@ async function createSession(agentId, dir, desc) {
   if (!provider || !provider.available) { vscode.window.showErrorMessage('Unknown or unavailable agent.'); return; }
   if (!dir) { vscode.window.showErrorMessage('No directory selected.'); return; }
 
-  let cwd = dir, repoRoot = null, branch = null, worktreePath = null, isWorktree = false;
+  let cwd = dir, repoRoot = null, worktreePath = null, isWorktree = false;
   if (await gitmod.isRepo(dir)) {
     const root = (await gitmod.mainRoot(dir)) || dir;
+    const startN = sessions.filter((s) => s.repoRoot === root).length + 1;   // <repo>-session-<N>
     const res = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'Creating worktree…' },
-      () => gitmod.addWorktree(root, desc || provider.label));
+      { location: vscode.ProgressLocation.Notification, title: 'Creating session worktree…' },
+      () => gitmod.addWorktree(root, startN));
     if (!res.ok) { vscode.window.showErrorMessage('Worktree failed: ' + res.error); return; }
-    cwd = res.wtPath; repoRoot = root; branch = res.branch; worktreePath = res.wtPath; isWorktree = true;
+    // Detached — no branch yet; the agent creates one during planning.
+    cwd = res.wtPath; repoRoot = root; worktreePath = res.wtPath; isWorktree = true;
   }
 
   const label = desc && desc.trim() ? desc.trim() : `${provider.label} · ${path.basename(cwd)}`;
   const rec = {
     id: genId(), agentId, cwd, label, sessionId: null, createdAt: Date.now(),
-    repoRoot, branch, worktreePath, isWorktree,
+    repoRoot, branch: null, worktreePath, isWorktree,
   };
   sessions.push(rec);
   persist();
-  spawn(rec, provider.launchCommand(cwd), true);
+  // For a fresh worktree, prime the agent (once it boots) to plan a branch first.
+  const onReady = isWorktree ? () => injectNewSessionPlan(rec, path.basename(repoRoot)) : null;
+  spawn(rec, provider.launchCommand(cwd), true, onReady);
   refreshGit();
+}
+
+// Injected into a brand-new detached worktree session so the agent leads with
+// branch planning before any edits. Submitted as the first turn once the CLI is up.
+function injectNewSessionPlan(rec, project) {
+  const prompt =
+    `[Agents Panel] Work is starting on "${project}". This is a fresh detached worktree with no branch yet. ` +
+    `Discuss the task and plan with me first; once the goal is clear, create a well-named git branch for it ` +
+    `(git checkout -b <name>) before making changes. What would you like to work on?`;
+  setTimeout(() => {
+    const term = live.get(rec.id);
+    if (term) { term.show(false); try { term.sendText(prompt, true); } catch (_) { /* terminal gone */ } }
+  }, 1200);   // small settle after the session file appears (CLI TUI ready)
 }
 function cmdNew() { if (view) view.requestForm(); }
 
@@ -460,7 +488,7 @@ async function cmdReviewPr(node) {
 function injectMergedAsk(rec, pr) {
   const n = pr ? `#${pr.number}` : '';
   const ask =
-    `[Agents Panel] My PR ${n} for branch "${rec.branch}" just merged, so this task is complete. ` +
+    `[Agents Panel] My PR ${n} for branch "${currentBranch(rec) || '(unknown)'}" just merged, so this task is complete. ` +
     `Ask me whether to start a new task on a fresh branch/worktree, and help me decide: ` +
     `(1) whether to /clear this conversation or keep it, based on how much of our context is still ` +
     `relevant; (2) a short description and branch name for the next task; (3) any cleanup for the ` +
@@ -498,9 +526,9 @@ async function maybePromptMerged(rec, pr) {
 function cmdReviewSession(node) {
   const rec = findById(node);
   if (!rec) return;
-  const m = meta.get(rec.id) || {};
-  const branch = rec.branch || m.branch || '(none)';
-  const pr = rec.branch ? prCache.get(rec.branch) : null;
+  const curBranch = currentBranch(rec);
+  const branch = curBranch || '(none yet)';
+  const pr = curBranch ? prCache.get(curBranch) : null;
   const prState = pr ? (pr.merged ? `merged (PR #${pr.number})` : `has open PR #${pr.number}`) : 'has no PR';
   const p = providers[rec.agentId] || {};
   let ctx = 'unknown';
@@ -528,14 +556,15 @@ async function cmdRemove(node) {
   const term = live.get(rec.id);
   let removeWt = false, delBranch = false;
 
+  const wtBranch = currentBranch(rec);
   if (rec.worktreePath && rec.repoRoot) {
     const m = meta.get(rec.id) || {};
-    const pr = rec.branch ? prCache.get(rec.branch) : null;
+    const pr = wtBranch ? prCache.get(wtBranch) : null;
     const merged = !!(pr && pr.merged);
     const dangerLabel = 'Remove worktree' + (merged ? ' + branch (merged)' : '');
     const choice = await vscode.window.showWarningMessage(
       `Remove "${rec.label}"?` + (m.dirty ? '\n\n⚠️ This worktree has UNCOMMITTED changes that will be lost.' : ''),
-      { modal: true, detail: `Worktree: ${rec.worktreePath}\nBranch: ${rec.branch}` },
+      { modal: true, detail: `Worktree: ${rec.worktreePath}\nBranch: ${wtBranch || '(none)'}` },
       dangerLabel, 'Forget only');
     if (choice === undefined) return;
     if (choice === dangerLabel) { removeWt = true; delBranch = merged; }
@@ -552,7 +581,7 @@ async function cmdRemove(node) {
     const m = meta.get(rec.id) || {};
     const res = await gitmod.removeWorktree(rec.repoRoot, rec.worktreePath, m.dirty);
     if (!res.ok) vscode.window.showErrorMessage('Worktree remove failed: ' + res.error);
-    else if (delBranch && rec.branch) await gitmod.deleteBranch(rec.repoRoot, rec.branch);
+    else if (delBranch && wtBranch) await gitmod.deleteBranch(rec.repoRoot, wtBranch);
   }
 
   sessions = sessions.filter((s) => s.id !== rec.id);
