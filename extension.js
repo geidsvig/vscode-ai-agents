@@ -92,32 +92,19 @@ function syncSelected(term) {
   if (id !== selectedId) { selectedId = id; refresh(); }
 }
 
-// The directory a session's card should reflect: the live terminal's current
-// cwd when shell integration reports it (so the card follows `cd`/branch changes
-// in the terminal), else the session's original launch cwd.
-function sessionCwd(rec) {
-  const term = live.get(rec.id);
-  const c = term && term.shellIntegration && term.shellIntegration.cwd;
-  return c ? c.fsPath : rec.cwd;
-}
-
 // --- Background refresh ------------------------------------------------------
 async function refreshGit() {
   for (const rec of sessions) {
-    const cwd = sessionCwd(rec);
-    const atLaunchDir = cwd === rec.cwd;
-    const i = await gitmod.info(cwd);
+    const i = await gitmod.info(rec.cwd);
     const m = {
       isRepo: i.isRepo,
-      // only fall back to the persisted branch while still in the launch dir;
-      // if the terminal wandered, show the live branch (or 'detached'), not a stale one.
-      branch: i.isRepo ? (i.branch || (atLaunchDir ? rec.branch : null) || null) : null,
+      branch: i.isRepo ? (i.branch || rec.branch || null) : null,
       detached: !!i.detached,
       dirty: !!i.dirty,
       isWorktree: !!i.isWorktree,
       root: i.root || rec.repoRoot || null,
     };
-    if (i.isRepo) m.hasRemote = await gitmod.hasRemote(cwd);
+    if (i.isRepo) m.hasRemote = await gitmod.hasRemote(rec.cwd);
     meta.set(rec.id, m);
   }
   const promo = getPromoted();
@@ -672,8 +659,10 @@ function activate(context) {
     vscode.window.onDidCloseTerminal((t) => {
       for (const [id, term] of live) { if (term === t) { live.delete(id); if (selectedId === id) selectedId = null; refresh(); break; } }
     }),
-    vscode.window.onDidChangeActiveTerminal((t) => { syncSelected(t); refreshGit(); }),
-    vscode.window.onDidChangeWindowState((s) => { if (s.focused) refreshGit(); }),
+    vscode.window.onDidChangeActiveTerminal((t) => syncSelected(t)),
+    // Coming back to VS Code (e.g. after merging a PR in the browser) rechecks
+    // git + PR state so the merged-task nudge appears promptly, not on the 60s tick.
+    vscode.window.onDidChangeWindowState((s) => { if (s.focused) { refreshGit(); refreshPR(); } }),
     vscode.commands.registerCommand('agentsPanel.new', cmdNew),
     vscode.commands.registerCommand('agentsPanel.openOrResume', cmdOpenOrResume),
     vscode.commands.registerCommand('agentsPanel.resume', cmdResume),
