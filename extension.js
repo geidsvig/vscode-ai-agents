@@ -230,14 +230,17 @@ function computeCards() {
     let model = null;
     if (typeof p.modelName === 'function') model = p.modelName(rec.cwd, rec.sessionId) || null;
 
-    // Context-window usage bar. The session file doesn't record the window size,
-    // and Claude has only two (200k / 1M), so infer: >200k used ⇒ 1M. Overridable.
+    // Context-window usage bar. The session file never records the window size, so
+    // we take the provider's best guess (200k, or 1M when the user's selected model
+    // carries the [1m] tag) and let the setting override it. The used>window bump is
+    // a floor so we never render >100% if the guess is low.
     let context = null;
     if (typeof p.contextTokens === 'function') {
       const used = p.contextTokens(rec.cwd, rec.sessionId);
       if (used) {
         const cfg = vscode.workspace.getConfiguration('agentsPanel').get('contextWindowTokens', 0);
-        const window = cfg && cfg > 0 ? cfg : (used > 200000 ? 1000000 : 200000);
+        let window = cfg && cfg > 0 ? cfg : (typeof p.contextWindow === 'function' ? p.contextWindow(rec.cwd, rec.sessionId) : 200000);
+        if (!(cfg && cfg > 0) && used > window) window = 1000000;
         context = { pct: Math.min(100, Math.round((used / window) * 100)), used, window };
       }
     }

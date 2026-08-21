@@ -158,6 +158,25 @@ function readSessionInfo(cwd, sessionId) {
 }
 function modelName(cwd, sessionId) { const i = readSessionInfo(cwd, sessionId); return i ? i.model : null; }
 function contextTokens(cwd, sessionId) { const i = readSessionInfo(cwd, sessionId); return i ? i.contextTokens : null; }
+
+// Best-effort context-window size. The session file never records it, so we can't
+// read it per-session; instead we default to Claude's standard 200k and upgrade to
+// 1M when the user's selected model carries the "[1m]" tag (Claude Code's 1M beta),
+// as stored in ~/.claude/settings.json. Cached by that file's mtime.
+const SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json');
+let settingsCache = { mtimeMs: -1, has1m: false };
+function has1mModel() {
+  try {
+    const st = fs.statSync(SETTINGS_FILE);
+    if (st.mtimeMs !== settingsCache.mtimeMs) {
+      let has1m = false;
+      try { has1m = /\[1m\]/i.test(JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')).model || ''); } catch (_) {}
+      settingsCache = { mtimeMs: st.mtimeMs, has1m };
+    }
+    return settingsCache.has1m;
+  } catch (_) { return false; }
+}
+function contextWindow() { return has1mModel() ? 1000000 : 200000; }
 // Activity state + file mtime, for the panel's working/waiting roll. status is one
 // of working | waiting | pending | idle (see readSessionInfo); the caller times the
 // ambiguous "pending" state to decide working-vs-waiting.
@@ -188,4 +207,5 @@ module.exports = {
   activity,
   modelName,
   contextTokens,
+  contextWindow,
 };
