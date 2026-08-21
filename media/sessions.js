@@ -58,7 +58,7 @@
     const card = el('div', 'card ' + (c.active ? 'active' : 'inactive') + ' k-' + kind + (c.selected ? ' selected' : ''));
     card.dataset.id = c.id;
 
-    // Row 1: project · agent   [last updated] [dot]
+    // Row 1: project · agent   [last updated]
     const l1 = el('div', 'l1');
     l1.appendChild(el('span', 'proj', c.project));
     l1.appendChild(el('span', 'sep', '·'));
@@ -66,7 +66,6 @@
     const up = el('span', 'updated', c.updated ? ago(c.updated) : '');
     if (c.updated) up.title = new Date(c.updated).toLocaleString();
     l1.appendChild(up);
-    l1.appendChild(el('span', 'dot ' + (c.active ? 'on' : 'off')));
     card.appendChild(l1);
 
     // Context-usage bar (under row 1). Green → yellow → red as the window fills.
@@ -84,10 +83,10 @@
 
     // Row 2: [checkout icon] branch  [merged status]  [PR badge]
     const l2 = el('div', 'l2');
-    if (kind === 'main' || kind === 'worktree') {
-      const ic = el('span', 'ctype ctype-' + kind);
-      ic.innerHTML = kind === 'main' ? ICON_MAIN : ICON_WORKTREE;
-      ic.title = kind === 'main' ? "On the repo's main checkout" : 'Running in a git worktree';
+    if (c.checkout) {
+      const ic = el('span', 'ctype ctype-' + c.checkout);
+      ic.innerHTML = c.checkout === 'main' ? ICON_MAIN : ICON_WORKTREE;
+      ic.title = c.checkout === 'main' ? "On the repo's main checkout" : 'Running in a git worktree';
       l2.appendChild(ic);
     }
     if (c.branch) {

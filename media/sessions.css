@@ -35,7 +35,7 @@ button.new .plus { font-size: 15px; line-height: 1; }
 .l2 .ctype { display: inline-flex; align-items: center; flex: none; }
 .l2 .ctype svg { width: 13px; height: 13px; display: block; }
 .ctype-main { color: var(--vscode-charts-green); }
-.ctype-worktree { color: var(--vscode-descriptionForeground); }
+.ctype-worktree { color: var(--vscode-foreground); }
 
 /* the session whose terminal is currently active — 1:1 with the focused terminal */
 .card.selected {
@@ -44,7 +44,7 @@ button.new .plus { font-size: 15px; line-height: 1; }
   box-shadow: inset 0 0 0 2px var(--vscode-charts-orange, #e8912d);
 }
 
-/* row 1: project · agent   [last updated] [dot] */
+/* row 1: project · agent   [last updated] */
 .l1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .l1 .proj { font-weight: 600; white-space: nowrap; }
 .l1 .agent { color: var(--vscode-descriptionForeground); white-space: nowrap; }
@@ -58,11 +58,6 @@ button.new .plus { font-size: 15px; line-height: 1; }
 .ctx-fill.warm { background: var(--vscode-charts-yellow); }
 .ctx-fill.hot  { background: var(--vscode-charts-red); }
 .ctx-pct { font-size: 10px; color: var(--vscode-descriptionForeground); white-space: nowrap; min-width: 30px; text-align: right; }
-
-/* active/inactive indicator */
-.dot { width: 11px; height: 11px; border-radius: 50%; flex: none; margin-left: 8px; box-sizing: border-box; }
-.dot.on  { background: var(--vscode-charts-green); }
-.dot.off { background: transparent; border: 1.5px solid var(--vscode-foreground); opacity: 0.85; }
 
 /* row 2: branch  [PR / merged / worktree status] */
 .l2 { display: flex; align-items: center; gap: 6px; margin-top: 2px; min-width: 0; }

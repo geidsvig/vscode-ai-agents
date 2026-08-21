@@ -151,6 +151,10 @@ function computeCards() {
     else if (isMain) status = { kind: 'main', text: '' };            // root already reads "main" as its branch
     else if (m.isWorktree) status = { kind: 'worktree', text: 'worktree' };
 
+    // Checkout type drives the row-2 icon, independent of PR/merged state:
+    // green git-branch = repo's main checkout, white tree = a worktree.
+    const checkout = m.isRepo ? (m.isWorktree ? 'worktree' : 'main') : null;
+
     // "Last updated" = mtime of the agent's session file, else record time.
     let updated = rec.createdAt || 0;
     if (typeof p.lastActivity === 'function') {
@@ -187,6 +191,7 @@ function computeCards() {
       status,
       prBadge: pr && !merged ? { number: pr.number, review: pr.review || 'open' } : null,
       merged,
+      checkout,
       context,
       active,
       selected: rec.id === selectedId,
