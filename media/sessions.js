@@ -35,6 +35,28 @@
     '<path d="M12 21V8.5"/><path d="M12 14l-5-3.5"/><path d="M12 16l5-3.5"/>' +
     '<circle cx="12" cy="6" r="2.3"/><circle cx="5.5" cy="9.5" r="2"/><circle cx="18.5" cy="11.5" r="2"/></svg>';
 
+  // 8-bit "Claw'd" mascot, drawn from a pixel grid into crisp SVG rects.
+  const MASCOT_GRID = [
+    '..XXXXXXXX..',
+    '.XXXXXXXXXX.',
+    'XXXXXXXXXXXX',
+    'XXX.XXXX.XXX',
+    'XXX.XXXX.XXX',
+    'XXXXXXXXXXXX',
+    'XXXXXXXXXXXX',
+    '.XX..XX..XX.',
+  ];
+  const MASCOT = (function (grid, color) {
+    const w = grid[0].length, h = grid.length;
+    let rects = '';
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < grid[y].length; x++) {
+        if (grid[y][x] === 'X') rects += '<rect x="' + x + '" y="' + y + '" width="1" height="1"/>';
+      }
+    }
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" fill="' + color + '" shape-rendering="crispEdges">' + rects + '</svg>';
+  })(MASCOT_GRID, '#D97757');
+
   function el(tag, cls, text) {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
@@ -62,7 +84,16 @@
     const l1 = el('div', 'l1');
     l1.appendChild(el('span', 'proj', c.project));
     l1.appendChild(el('span', 'sep', '·'));
-    l1.appendChild(el('span', 'agent', c.agent));
+    // Agent: the Claw'd mascot for Claude (else the provider label), then the model.
+    if (c.agentId === 'claude') {
+      const mc = el('span', 'mascot');
+      mc.innerHTML = MASCOT;
+      mc.title = 'Claude' + (c.model ? ' ' + c.model : '');
+      l1.appendChild(mc);
+    } else {
+      l1.appendChild(el('span', 'agent', c.agentLabel || c.agentId));
+    }
+    if (c.model) l1.appendChild(el('span', 'agent', c.model));
     const up = el('span', 'updated', c.updated ? ago(c.updated) : '');
     if (c.updated) up.title = new Date(c.updated).toLocaleString();
     l1.appendChild(up);

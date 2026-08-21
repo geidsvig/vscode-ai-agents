@@ -50,6 +50,8 @@ button.new .plus { font-size: 15px; line-height: 1; }
 .l1 .agent { color: var(--vscode-descriptionForeground); white-space: nowrap; }
 .l1 .sep { color: var(--vscode-descriptionForeground); opacity: 0.5; }
 .l1 .updated { margin-left: auto; color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; }
+.l1 .mascot { display: inline-flex; align-items: center; flex: none; }
+.l1 .mascot svg { height: 14px; width: auto; display: block; }
 
 /* context-usage bar (row 1.5) */
 .ctx { display: flex; align-items: center; gap: 6px; margin-top: 3px; }

@@ -164,11 +164,9 @@ function computeCards() {
 
     // Agent label + resolved model, e.g. "Claude Opus 4.8" (falls back to plain
     // "Claude" until the session has an assistant message to read the model from).
-    let agent = p.label || rec.agentId;
-    if (typeof p.modelName === 'function') {
-      const mn = p.modelName(rec.cwd, rec.sessionId);
-      if (mn) agent = `${agent} ${mn}`;
-    }
+    const agentLabel = p.label || rec.agentId;
+    let model = null;
+    if (typeof p.modelName === 'function') model = p.modelName(rec.cwd, rec.sessionId) || null;
 
     // Context-window usage bar. The session file doesn't record the window size,
     // and Claude has only two (200k / 1M), so infer: >200k used ⇒ 1M. Overridable.
@@ -185,7 +183,9 @@ function computeCards() {
     return {
       id: rec.id,
       project: path.basename(repoRoot || rec.cwd),
-      agent,
+      agentId: rec.agentId,
+      agentLabel,
+      model,
       branch: branch || '',
       dirty: !!m.dirty,
       status,
