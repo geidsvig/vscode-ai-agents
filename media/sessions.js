@@ -37,14 +37,14 @@
 
   // 8-bit "Claw'd" mascot, drawn from a pixel grid into crisp SVG rects.
   const MASCOT_GRID = [
-    '..XXXXXXXX..',
-    '.XXXXXXXXXX.',
-    'XXXXXXXXXXXX',
-    'XXX.XXXX.XXX',
-    'XXX.XXXX.XXX',
-    'XXXXXXXXXXXX',
-    'XXXXXXXXXXXX',
-    '.XX..XX..XX.',
+    '..XXXXXXXXX..',
+    '.XXXXXXXXXXX.',
+    '.XXXXXXXXXXX.',
+    '.XX.XXXXX.XX.',   // eyes
+    'XXXXXXXXXXXXX',   // arms poke out the sides
+    '.XXXXXXXXXXX.',
+    '.XXXXXXXXXXX.',
+    '..XX.....XX..',   // two legs
   ];
   const MASCOT = (function (grid, color) {
     const w = grid[0].length, h = grid.length;
