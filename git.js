@@ -78,22 +78,24 @@ async function branchExists(root, branch) {
 const slugify = (s) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'session';
 
-// Create <root>/.agents/<slug> on branch agent/<slug>, disambiguating on
-// collision. Returns { ok, wtPath, branch, error }.
-async function addWorktree(root, desiredSlug) {
+// Create <root>/.agents/<repo>-session-<N> as a DETACHED worktree at the default
+// branch's tip. Detached because a worktree can't share `main` with the root, and
+// the branch is chosen later (in conversation). N starts at `startN` and bumps
+// past any existing dir. Returns { ok, wtPath, name, error }.
+async function addWorktree(root, startN) {
   const base = await defaultBranch(root);
-  let slug = slugify(desiredSlug);
+  const repo = path.basename(root);
   const fs = require('fs');
-  for (let n = 1; n <= 50; n++) {
-    const candidate = n === 1 ? slug : `${slug}-${n}`;
-    const branch = `agent/${candidate}`;
-    const wtPath = path.join(root, '.agents', candidate);
-    if (fs.existsSync(wtPath) || (await branchExists(root, branch))) continue;
-    const r = await git(['worktree', 'add', wtPath, '-b', branch, base], root);
-    if (r.code === 0) return { ok: true, wtPath, branch };
+  let n = Math.max(1, startN || 1);
+  for (let tries = 0; tries < 100; tries += 1, n += 1) {
+    const name = `${repo}-session-${n}`;
+    const wtPath = path.join(root, '.agents', name);
+    if (fs.existsSync(wtPath)) continue;
+    const r = await git(['worktree', 'add', '--detach', wtPath, base], root);
+    if (r.code === 0) return { ok: true, wtPath, name };
     return { ok: false, error: r.stderr || 'git worktree add failed' };
   }
-  return { ok: false, error: 'could not find a free worktree name' };
+  return { ok: false, error: 'could not find a free session slot' };
 }
 
 // Load a branch into the repo root for manual testing, without merging.

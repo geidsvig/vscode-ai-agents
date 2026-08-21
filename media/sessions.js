@@ -79,29 +79,18 @@
 
   function cardEl(c) {
     const kind = c.status ? c.status.kind : 'none';
-    const card = el('div', 'card ' + (c.active ? 'active' : 'inactive') + ' k-' + kind + (c.selected ? ' selected' : ''));
+    const card = el('div', 'card ' + (c.active ? 'active' : 'inactive') + (c.selected ? ' selected' : ''));
     card.dataset.id = c.id;
 
-    // Row 1: project · agent   [last updated]
+    // Row 1: project ............................. [last updated]
     const l1 = el('div', 'l1');
     l1.appendChild(el('span', 'proj', c.project));
-    l1.appendChild(el('span', 'sep', '·'));
-    // Agent: the Claw'd mascot for Claude (else the provider label), then the model.
-    if (c.agentId === 'claude') {
-      const mc = el('span', 'mascot');
-      mc.innerHTML = MASCOT;
-      mc.title = 'Claude' + (c.model ? ' ' + c.model : '');
-      l1.appendChild(mc);
-    } else {
-      l1.appendChild(el('span', 'agent', c.agentLabel || c.agentId));
-    }
-    if (c.model) l1.appendChild(el('span', 'agent', c.model));
     const up = el('span', 'updated', c.updated ? ago(c.updated) : '');
     if (c.updated) up.title = new Date(c.updated).toLocaleString();
     l1.appendChild(up);
     card.appendChild(l1);
 
-    // Context-usage bar (under row 1). Green → yellow → red as the window fills.
+    // Context-usage bar. Green → yellow → red as the window fills.
     if (c.context) {
       const ctx = el('div', 'ctx');
       const track = el('div', 'ctx-track');
@@ -114,7 +103,7 @@
       card.appendChild(ctx);
     }
 
-    // Row 2: [checkout icon] branch  [merged status]  [PR badge]
+    // Branch row: [checkout icon] branch .......... [merged] [PR badge]
     const l2 = el('div', 'l2');
     if (c.checkout) {
       const ic = el('span', 'ctype ctype-' + c.checkout);
@@ -127,19 +116,36 @@
       b.appendChild(el('span', null, c.branch));
       if (c.dirty) b.appendChild(el('span', 'dirty', ' *'));
       l2.appendChild(b);
+    } else {
+      l2.appendChild(el('span', 'branch muted', 'no branch yet'));
     }
-    // main/worktree are now shown as the icon; keep other status text (e.g. merged).
     if (c.status && c.status.text && kind !== 'main' && kind !== 'worktree') {
       l2.appendChild(el('span', 'status', c.status.text));
     }
-    if (!c.branch && !(c.status && c.status.text) && !c.prBadge) l2.appendChild(el('span', 'branch muted', 'no branch'));
-    // Right-aligned PR badge: green approved / red blocked / white otherwise.
     if (c.prBadge) {
       l2.appendChild(el('span', 'pr-badge pr-' + (c.prBadge.review || 'open'), '[PR #' + c.prBadge.number + ']'));
     }
     card.appendChild(l2);
 
-    // Row 3: description
+    // Agent row: [mascot / provider] model  <session-id>
+    const lag = el('div', 'lag');
+    if (c.agentId === 'claude') {
+      const mc = el('span', 'mascot');
+      mc.innerHTML = MASCOT;
+      mc.title = 'Claude' + (c.model ? ' ' + c.model : '');
+      lag.appendChild(mc);
+    } else {
+      lag.appendChild(el('span', 'agent', c.agentLabel || c.agentId));
+    }
+    if (c.model) lag.appendChild(el('span', 'agent model', c.model));
+    if (c.sessionShort) {
+      const sid = el('span', 'sid', c.sessionShort);
+      sid.title = 'Session id: ' + (c.sessionId || c.sessionShort);
+      lag.appendChild(sid);
+    }
+    card.appendChild(lag);
+
+    // Description row
     card.appendChild(el('div', 'l3', c.description || ''));
 
     card.addEventListener('click', () => vscode.postMessage({ action: 'open', id: c.id }));
