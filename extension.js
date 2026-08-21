@@ -27,6 +27,10 @@ const live = new Map();            // recordId -> vscode.Terminal running the ag
 const meta = new Map();            // recordId -> live git snapshot
 const prCache = new Map();         // branch -> { number, state, merged, url }
 const mergePrompted = new Set();   // "recordId:prNumber" already offered this load (no 60s re-nag)
+const focusedAt = new Map();       // recordId -> ms the user last focused this session's terminal
+const seenMtime = new Map();       // recordId -> last observed session-file mtime (ms)
+const workingUntil = new Map();    // recordId -> ms; the card shows the "working" roll while now < this
+let lastWorkingKey = '';           // de-dupes identical working-set posts to the webview
 let selectedId = null;             // recordId whose terminal is the active one (1:1 with the panel highlight)
 let view;                          // SessionsWebview
 
@@ -98,6 +102,7 @@ function currentBranch(rec) {
 function syncSelected(term) {
   let id = null;
   if (term) for (const [rid, t] of live) { if (t === term) { id = rid; break; } }
+  if (id) focusedAt.set(id, Date.now());   // keep polling this session's activity for a while after focus
   if (id !== selectedId) { selectedId = id; refresh(); }
 }
 
@@ -135,6 +140,37 @@ async function refreshPR() {
   }
   refresh();
 }
+
+// --- Working indicator -------------------------------------------------------
+// A session is "working" while its agent keeps writing to its session file. We
+// only watch the sessions the user actually cares about — one with a live
+// terminal, or one focused in the last few minutes — so old sessions aren't
+// stat()'d every tick. This runs off the slow git/PR ticks (so the roll is
+// responsive) and posts a tiny id-set message rather than a full state refresh
+// (so cards aren't rebuilt mid-animation, which would reset the CSS roll).
+const FOCUS_RECENT_MS = 5 * 60 * 1000;   // keep polling a session this long after it was last focused
+const WORK_GRACE_MS = 2500;              // hold "working" this long past the last file change (spans write gaps)
+function pollActivity() {
+  const now = Date.now();
+  for (const rec of sessions) {
+    const watched = live.has(rec.id) || (now - (focusedAt.get(rec.id) || 0) < FOCUS_RECENT_MS);
+    if (!watched) continue;
+    const p = providers[rec.agentId];
+    if (!p || typeof p.lastActivity !== 'function') continue;
+    const t = p.lastActivity(rec.cwd, rec.sessionId);
+    if (!t) continue;
+    const prev = seenMtime.get(rec.id);
+    seenMtime.set(rec.id, t);
+    if (prev !== undefined && t > prev) workingUntil.set(rec.id, now + WORK_GRACE_MS);
+  }
+  // Only a live session (agent process still running) can be "working".
+  const ids = sessions
+    .filter((rec) => live.has(rec.id) && (workingUntil.get(rec.id) || 0) > now)
+    .map((rec) => rec.id);
+  const key = ids.join(',');
+  if (key !== lastWorkingKey) { lastWorkingKey = key; if (view) view.postWorking(ids); }
+}
+function isWorking(rec) { return live.has(rec.id) && (workingUntil.get(rec.id) || 0) > Date.now(); }
 
 // --- View model --------------------------------------------------------------
 function computeCards() {
@@ -206,6 +242,7 @@ function computeCards() {
       checkout,
       context,
       active,
+      working: isWorking(rec),
       selected: rec.id === selectedId,
       updated,
       description: rec.label,
@@ -284,12 +321,19 @@ function primePlanningPrompt(rec, project) {
     injectNewSessionPlan(rec, project);
     if (!p || typeof p.newSessionSince !== 'function') return;
     setTimeout(() => {
-      if (live.has(rec.id) && !p.newSessionSince(rec.cwd, since)) injectNewSessionPlan(rec, project);
-    }, 5000);   // still no session file => the first send was dropped; resend once
+      // No session file yet => the TUI was mid-boot and swallowed our Enter (the
+      // typed prompt is still sitting in the input box). Re-press Enter to submit
+      // it — do NOT retype, or the prompt lands doubled. And if the first send in
+      // fact went through (Claude just slow to create the file), a bare Enter on
+      // the now-empty input is a harmless no-op.
+      if (live.has(rec.id) && !p.newSessionSince(rec.cwd, since)) injectNewSessionPlan(rec, project, true);
+    }, 5000);
   }, delay);
 }
-// Submit the planning prompt as the session's first turn.
-function injectNewSessionPlan(rec, project) {
+// Submit the planning prompt as the session's first turn. `submitOnly` re-presses
+// Enter without retyping — used by the resend path so a swallowed submit can't
+// double the prompt text.
+function injectNewSessionPlan(rec, project, submitOnly) {
   const term = live.get(rec.id);
   if (!term) return;
   const prompt =
@@ -297,7 +341,10 @@ function injectNewSessionPlan(rec, project) {
     `Discuss the task and plan with me first; once the goal is clear, create a well-named git branch for it ` +
     `(git checkout -b <name>) before making changes. What would you like to work on?`;
   term.show(false);
-  try { term.sendText(prompt, true); } catch (_) { /* terminal gone */ }
+  try {
+    if (!submitOnly) term.sendText(prompt, false);   // type the prompt without submitting
+    term.sendText('', true);                          // press Enter to submit the buffered text
+  } catch (_) { /* terminal gone */ }
 }
 function cmdNew() { if (view) view.requestForm(); }
 
@@ -615,6 +662,7 @@ async function cmdRemove(node) {
 
   sessions = sessions.filter((s) => s.id !== rec.id);
   meta.delete(rec.id);
+  seenMtime.delete(rec.id); workingUntil.delete(rec.id); focusedAt.delete(rec.id);
   persist();
 }
 
@@ -634,6 +682,11 @@ class SessionsWebview {
   }
   post() {
     if (this.view) this.view.webview.postMessage({ type: 'state', ...computeState() });
+  }
+  // Lightweight "who's working" update — toggles the roll on existing cards
+  // without rebuilding them (a full post() would reset the CSS animation).
+  postWorking(ids) {
+    if (this.view) this.view.webview.postMessage({ type: 'working', ids });
   }
   requestForm() {
     vscode.commands.executeCommand('agentsPanel.sessions.focus');
@@ -728,7 +781,8 @@ function activate(context) {
 
   const gi = setInterval(() => refreshGit(), 12000);
   const pi = setInterval(() => refreshPR(), 60000);
-  context.subscriptions.push({ dispose: () => { clearInterval(gi); clearInterval(pi); } });
+  const ai = setInterval(() => pollActivity(), 800);   // fast tick that drives the "working" roll
+  context.subscriptions.push({ dispose: () => { clearInterval(gi); clearInterval(pi); clearInterval(ai); } });
   // Populate git metadata first, THEN PR state — refreshPR reads the `meta` that
   // refreshGit fills in (hasRemote, branch). Firing them back-to-back let the
   // first PR refresh run before meta was ready, so it no-op'd and merge detection

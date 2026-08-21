@@ -13,6 +13,7 @@
   window.addEventListener('message', (e) => {
     const d = e.data || {};
     if (d.type === 'state') { agents = d.agents || []; folders = d.folders || []; render(d.cards || []); }
+    else if (d.type === 'working') { applyWorking(d.ids || []); }
     else if (d.type === 'openForm') { openNewForm(); }
     else if (d.type === 'browsed') { onBrowsed(d.path); }
   });
@@ -77,9 +78,17 @@
     for (const c of cards) root.appendChild(cardEl(c));
   }
 
+  // Toggle the "working" roll on already-rendered cards without rebuilding them.
+  function applyWorking(ids) {
+    const on = new Set(ids);
+    for (const node of root.querySelectorAll('.card')) {
+      node.classList.toggle('working', on.has(node.dataset.id));
+    }
+  }
+
   function cardEl(c) {
     const kind = c.status ? c.status.kind : 'none';
-    const card = el('div', 'card ' + (c.active ? 'active' : 'inactive') + (c.selected ? ' selected' : ''));
+    const card = el('div', 'card ' + (c.active ? 'active' : 'inactive') + (c.selected ? ' selected' : '') + (c.working ? ' working' : ''));
     card.dataset.id = c.id;
 
     // Row 1: project ............................. [last updated]
@@ -138,6 +147,12 @@
       lag.appendChild(el('span', 'agent', c.agentLabel || c.agentId));
     }
     if (c.model) lag.appendChild(el('span', 'agent model', c.model));
+    // Rolling "…" that animates while the agent is actively working. Always in the
+    // DOM; CSS reveals it only when the card carries the .working class, so toggling
+    // that class (via the light 'working' message) never rebuilds the card.
+    const work = el('span', 'work');
+    work.title = 'Agent is working…';
+    lag.appendChild(work);
     if (c.sessionShort) {
       const sid = el('span', 'sid', c.sessionShort);
       sid.title = 'Session id: ' + (c.sessionId || c.sessionShort);
