@@ -103,6 +103,12 @@
         "title": "Review PR Comments",
         "category": "Agents",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "agentsPanel.reviewSession",
+        "title": "Review Session",
+        "category": "Agents",
+        "icon": "$(checklist)"
       }
     ],
     "menus": {

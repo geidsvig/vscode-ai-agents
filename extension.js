@@ -491,6 +491,36 @@ async function maybePromptMerged(rec, pr) {
   if (choice === RESUME) injectMergedAsk(rec, pr);
 }
 
+// Menu-triggered "Review session": ask the agent (in-thread) to assess the
+// session's health — merged branch, context pressure, stale description — and
+// recommend next steps, without changing anything. Single-line so it submits
+// cleanly into the agent's input.
+function cmdReviewSession(node) {
+  const rec = findById(node);
+  if (!rec) return;
+  const m = meta.get(rec.id) || {};
+  const branch = rec.branch || m.branch || '(none)';
+  const pr = rec.branch ? prCache.get(rec.branch) : null;
+  const prState = pr ? (pr.merged ? `merged (PR #${pr.number})` : `has open PR #${pr.number}`) : 'has no PR';
+  const p = providers[rec.agentId] || {};
+  let ctx = 'unknown';
+  if (typeof p.contextTokens === 'function') {
+    const used = p.contextTokens(rec.cwd, rec.sessionId);
+    if (used) {
+      const cfg = vscode.workspace.getConfiguration('agentsPanel').get('contextWindowTokens', 0);
+      const win = cfg && cfg > 0 ? cfg : (used > 200000 ? 1000000 : 200000);
+      ctx = `~${Math.round((used / win) * 100)}% of the window`;
+    }
+  }
+  const prompt =
+    `[Agents Panel] Please review this session and recommend next steps (don't change anything without my ok): ` +
+    `(1) branch "${branch}" ${prState} — if this work is merged/done, recommend starting a fresh working branch/worktree for the next task; ` +
+    `(2) context is at ${ctx} — advise whether to /clear or /compact based on how much is still relevant; ` +
+    `(3) the session description is "${rec.label}" — is it still accurate for what we're doing now, and if not suggest a better one. ` +
+    `Give your recommendations, then wait for my decision.`;
+  injectPrompt(rec, prompt, true);   // submit → agent runs the review in-thread (resumes first if needed)
+}
+
 // --- Commands: remove --------------------------------------------------------
 async function cmdRemove(node) {
   const rec = findById(node);
@@ -590,6 +620,7 @@ class SessionsWebview {
       case 'returnMain': cmdReturnToMain(id); break;
       case 'pr': cmdPr(id); break;
       case 'reviewPr': cmdReviewPr(id); break;
+      case 'reviewSession': cmdReviewSession(id); break;
       case 'remove': cmdRemove(id); break;
     }
   }
@@ -623,6 +654,7 @@ function activate(context) {
     vscode.commands.registerCommand('agentsPanel.returnToMain', cmdReturnToMain),
     vscode.commands.registerCommand('agentsPanel.pr', cmdPr),
     vscode.commands.registerCommand('agentsPanel.reviewPr', cmdReviewPr),
+    vscode.commands.registerCommand('agentsPanel.reviewSession', cmdReviewSession),
   );
 
   // On reload VSCode reconnects still-running terminals (persistent sessions keep

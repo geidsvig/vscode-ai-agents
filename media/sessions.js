@@ -172,6 +172,7 @@
     const out = [];
     out.push({ label: c.active ? 'Focus terminal' : 'Resume session', action: 'open' });
     out.push({ sep: true });
+    out.push({ label: 'Review session', action: 'reviewSession' });
     out.push({ label: 'Rename', do: () => openRenameForm(c) });
     if (c.canReveal) out.push({ label: 'Reveal session file', action: 'reveal' });
     if (c.canReturn) out.push({ label: 'Return root to main', action: 'returnMain' });
