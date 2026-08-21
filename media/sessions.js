@@ -178,11 +178,6 @@
     else out.push({ label: 'Set as main (test in root)', action: 'setMain' });
     if (c.prBadge) out.push({ label: 'Review PR comments…', action: 'reviewPr' });
     out.push({ label: 'Create / update PR', action: 'pr' });
-    if (c.merged) {
-      out.push({ sep: true });
-      out.push({ label: 'Start new task…', action: 'startNewTask' });
-      out.push({ label: 'Plan next task with agent', action: 'planNext' });
-    }
     out.push({ sep: true });
     out.push({ label: 'Remove from list', action: 'remove', danger: true });
     return out;

@@ -453,91 +453,42 @@ async function cmdReviewPr(node) {
 }
 
 // --- Task lifecycle: nudge to a new task once a PR merges --------------------
-// When a session's PR turns merged, offer to move on — once per PR, nothing
-// automatic. The extension drives git; the agent (via cmdPlanNext) makes the
-// judgement calls (is context stale? new description? /clear or keep?).
+// New-branch creation and context cleanup are the agent's job, done in the
+// terminal thread — not menu actions. So on merge we just ask the running agent
+// to raise it and let the user decide there. Fires once per PR; nothing is
+// created, cleared, or closed automatically.
+function injectMergedAsk(rec, pr) {
+  const n = pr ? `#${pr.number}` : '';
+  const ask =
+    `[Agents Panel] My PR ${n} for branch "${rec.branch}" just merged, so this task is complete. ` +
+    `Ask me whether to start a new task on a fresh branch/worktree, and help me decide: ` +
+    `(1) whether to /clear this conversation or keep it, based on how much of our context is still ` +
+    `relevant; (2) a short description and branch name for the next task; (3) any cleanup for the ` +
+    `finished branch. Give your recommendation, then wait for my decision — don't close this session.`;
+  injectPrompt(rec, ask, true);   // submit → the agent raises it in-thread (resumes first if needed)
+}
+
 async function maybePromptMerged(rec, pr) {
   if (rec.mergedHandledPr === pr.number) return;        // already handled for this PR
   const key = rec.id + ':' + pr.number;
   if (mergePrompted.has(key)) return;                   // already offered this load — don't re-nag
   mergePrompted.add(key);
 
-  // Preferred: ask inside the agent thread, where the user is and will decide.
-  // A toast is easy to miss; a submitted turn puts the question in the transcript
-  // and the agent raises it directly. Recorded as handled so it won't re-fire.
-  if (live.has(rec.id)) {
-    const n = pr ? `#${pr.number}` : '';
-    const ask =
-      `[Agents Panel] My PR ${n} for branch "${rec.branch}" just merged, so this task is complete. ` +
-      `Ask me whether to start a new task on a fresh branch, and help me decide: ` +
-      `(1) whether to /clear this conversation or keep it, based on how much of our context is still ` +
-      `relevant; (2) a short description and branch name for the next task; (3) any cleanup for the ` +
-      `finished branch. Give your recommendation, then wait for my decision.`;
-    injectPrompt(rec, ask, true);                       // submit → agent asks in-thread
+  if (live.has(rec.id)) {                               // agent running → ask in-thread now
+    injectMergedAsk(rec, pr);
     rec.mergedHandledPr = pr.number;
     persist();
     return;
   }
-
-  // Fallback: no running agent to ask, so notify. Missed/auto-dismissed toast
-  // (choice === undefined) re-offers on the next reload instead of vanishing.
-  const NEW = 'New task (new branch)';
-  const PLAN = 'Plan with agent';
+  // No running agent to converse with — offer to bring it back so the hand-off
+  // happens in the thread. A missed/dismissed toast re-offers on the next load.
+  const RESUME = 'Resume & plan next';
   const choice = await vscode.window.showInformationMessage(
-    `✅ PR #${pr.number} for "${rec.label}" is merged — this task's work is done. ` +
-    `Start a new task on a fresh branch?`,
-    NEW, PLAN, 'Not now');
+    `✅ PR #${pr.number} for "${rec.label}" is merged — this task's work is done.`, RESUME, 'Not now');
   if (choice === undefined) return;
   rec.mergedHandledPr = pr.number;
   persist();
-  if (choice === NEW) cmdStartNewTask(rec.id);
-  else if (choice === PLAN) cmdPlanNext(rec.id);
-}
-
-// Start a fresh task: a new worktree/branch off the repo's default branch, in the
-// same repo and with the same agent. Leaves the finished session intact, then
-// offers to clean up its merged worktree.
-async function cmdStartNewTask(node) {
-  const rec = findById(node);
-  if (!rec) return;
-  const root = rec.repoRoot || (meta.get(rec.id) || {}).root;
-  if (!root) { vscode.window.showInformationMessage('This session is not in a git repo — no branch to start.'); return; }
-  const desc = await vscode.window.showInputBox({
-    prompt: 'Describe the new task (used for the new worktree/branch name)',
-    placeHolder: 'e.g. add dark-mode toggle',
-  });
-  if (desc == null || !desc.trim()) return;
-  await createSession(rec.agentId, root, desc.trim());
-  const pr = rec.branch ? prCache.get(rec.branch) : null;
-  if (rec.worktreePath && pr && pr.merged) {
-    const CLEAN = 'Clean up old worktree';
-    const pick = await vscode.window.showInformationMessage(
-      `New task started. Remove the finished worktree "${rec.label}" (branch ${rec.branch}, merged)?`,
-      CLEAN, 'Keep it');
-    if (pick === CLEAN) cmdRemove(rec.id);
-  }
-}
-
-// Keep this session/chat, but ask the running agent to plan the hand-off: whether
-// to /clear stale context, a suggested description + branch name, and cleanup for
-// the finished branch. Pre-typed so the user submits or discards — for people who
-// live in one long chat and refresh with /clear rather than a new session.
-function cmdPlanNext(node) {
-  const rec = findById(node);
-  if (!rec) return;
-  const pr = rec.branch ? prCache.get(rec.branch) : null;
-  const n = pr ? `#${pr.number}` : '';
-  const prompt =
-    `My PR ${n} for branch "${rec.branch}" just merged, so this task is complete. ` +
-    `Help me transition to the next task without dragging along stale context: ` +
-    `(1) tell me whether to /clear this conversation or keep it, based on how much of our ` +
-    `current context is still relevant and how long we've been going; ` +
-    `(2) suggest a short description and branch name for the next task; ` +
-    `(3) note any cleanup for the finished branch (e.g. removing the merged worktree). ` +
-    `Recommend, but let me decide.`;
-  injectPrompt(rec, prompt);
-  vscode.window.showInformationMessage(
-    `Transition prompt loaded into "${rec.label}". Press Enter to ask the agent, or clear the line to discard.`);
+  if (choice === RESUME) injectMergedAsk(rec, pr);
 }
 
 // --- Commands: remove --------------------------------------------------------
@@ -639,8 +590,6 @@ class SessionsWebview {
       case 'returnMain': cmdReturnToMain(id); break;
       case 'pr': cmdPr(id); break;
       case 'reviewPr': cmdReviewPr(id); break;
-      case 'startNewTask': cmdStartNewTask(id); break;
-      case 'planNext': cmdPlanNext(id); break;
       case 'remove': cmdRemove(id); break;
     }
   }
@@ -674,8 +623,6 @@ function activate(context) {
     vscode.commands.registerCommand('agentsPanel.returnToMain', cmdReturnToMain),
     vscode.commands.registerCommand('agentsPanel.pr', cmdPr),
     vscode.commands.registerCommand('agentsPanel.reviewPr', cmdReviewPr),
-    vscode.commands.registerCommand('agentsPanel.startNewTask', cmdStartNewTask),
-    vscode.commands.registerCommand('agentsPanel.planNext', cmdPlanNext),
   );
 
   // On reload VSCode reconnects still-running terminals (persistent sessions keep

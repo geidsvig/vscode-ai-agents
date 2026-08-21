@@ -103,18 +103,6 @@
         "title": "Review PR Comments",
         "category": "Agents",
         "icon": "$(comment-discussion)"
-      },
-      {
-        "command": "agentsPanel.startNewTask",
-        "title": "Start New Task",
-        "category": "Agents",
-        "icon": "$(git-branch)"
-      },
-      {
-        "command": "agentsPanel.planNext",
-        "title": "Plan Next Task With Agent",
-        "category": "Agents",
-        "icon": "$(lightbulb)"
       }
     ],
     "menus": {
