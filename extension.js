@@ -149,19 +149,26 @@ async function refreshPR() {
 // responsive) and posts a tiny id-set message rather than a full state refresh
 // (so cards aren't rebuilt mid-animation, which would reset the CSS roll).
 const FOCUS_RECENT_MS = 5 * 60 * 1000;   // keep polling a session this long after it was last focused
-const WORK_GRACE_MS = 2500;              // hold "working" this long past the last file change (spans write gaps)
+const WORK_GRACE_MS = 2500;              // let the roll trail this long after work stops (smooths a stray misread)
 function pollActivity() {
   const now = Date.now();
   for (const rec of sessions) {
     const watched = live.has(rec.id) || (now - (focusedAt.get(rec.id) || 0) < FOCUS_RECENT_MS);
     if (!watched) continue;
     const p = providers[rec.agentId];
-    if (!p || typeof p.lastActivity !== 'function') continue;
-    const t = p.lastActivity(rec.cwd, rec.sessionId);
-    if (!t) continue;
-    const prev = seenMtime.get(rec.id);
-    seenMtime.set(rec.id, t);
-    if (prev !== undefined && t > prev) workingUntil.set(rec.id, now + WORK_GRACE_MS);
+    if (!p) continue;
+    // Primary signal: does the transcript show the agent mid-turn? This stays
+    // true across generation/tool gaps, so the roll runs continuously until the
+    // turn actually closes — unlike the old mtime-delta guess, which died in
+    // every silent gap. Providers without isBusy fall back to that mtime guess.
+    let busy;
+    if (typeof p.isBusy === 'function') {
+      busy = p.isBusy(rec.cwd, rec.sessionId);
+    } else if (typeof p.lastActivity === 'function') {
+      const t = p.lastActivity(rec.cwd, rec.sessionId);
+      if (t) { const prev = seenMtime.get(rec.id); seenMtime.set(rec.id, t); busy = prev !== undefined && t > prev; }
+    }
+    if (busy) workingUntil.set(rec.id, now + WORK_GRACE_MS);
   }
   // Only a live session (agent process still running) can be "working".
   const ids = sessions

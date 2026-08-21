@@ -3,14 +3,13 @@
   /* Restrained plugin palette — reserved strictly by meaning. Structural
      surfaces/text stay on VS Code theme vars; these carry semantic state only.
        blue  = plugin / navigation / selection
-       green = execution / progress (only the working roll + PR-approved)
        coral = agent / model identity
+     The working "…" roll is theme white (activity ping, not a status color).
      Dark-tuned values; tweak here to retheme the whole panel. */
   --ap-accent: #3a8fc2;         /* context bar, branch, primary interactions */
   --ap-accent-hover: #47a4d8;
   --ap-select-border: #31566b;  /* selected-card border */
   --ap-select-bg: #17232a;      /* selected-card tint */
-  --ap-run: #6dba7a;            /* execution/progress green */
   --ap-agent: #b86f55;          /* Claw'd mascot / model glyph */
 }
 * { box-sizing: border-box; }
@@ -85,7 +84,7 @@ button.new .plus { font-size: 15px; line-height: 1; }
   width: 1.4em;   /* hold width across frames so the row doesn't jitter */
   font-family: var(--vscode-editor-font-family, monospace);
   letter-spacing: 1px;
-  color: var(--ap-run);
+  color: var(--vscode-foreground);   /* theme "white" — an activity ping, not a status color */
 }
 .card.working .lag .work::after {
   content: '...';

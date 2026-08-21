@@ -96,7 +96,7 @@ function readSessionInfo(cwd, sessionId) {
   if (!file) return null;
   const cached = infoCache.get(file);
   if (cached && cached.mtimeMs === st.mtimeMs) return cached;
-  let model = null, contextTokens = null;
+  let model = null, contextTokens = null, busy = false;
   try {
     const start = Math.max(0, st.size - TAIL_BYTES);
     const len = st.size - start;
@@ -117,13 +117,37 @@ function readSessionInfo(cwd, sessionId) {
         if (t > 0) contextTokens = t;
       }
     }
+    // Is the agent mid-turn? Scan the tail backwards for the last real message
+    // (skipping the ai-title / mode / last-prompt metadata lines Claude appends).
+    // A finished turn is an assistant message with a terminal stop_reason; a
+    // user entry (fresh prompt or tool_result) or an assistant tool_use means
+    // the model still owes a reply — i.e. it's working. This holds true across
+    // the long silent gaps (model generation, slow tools) because the last
+    // message stays tool_use/tool_result until the closing end_turn lands.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const ln = lines[i];
+      if (!ln || ln.indexOf('"role"') === -1) continue;   // only message entries carry a role
+      let o;
+      try { o = JSON.parse(ln); } catch (_) { continue; }  // clipped tail line -> skip
+      if (o.type !== 'user' && o.type !== 'assistant') continue;
+      if (o.type === 'assistant') {
+        const sr = (o.message || {}).stop_reason;
+        busy = !(sr === 'end_turn' || sr === 'stop_sequence');
+      } else {
+        busy = true;   // last message is a user prompt / tool_result -> model's turn
+      }
+      break;
+    }
   } catch (_) { /* unreadable */ }
-  const info = { mtimeMs: st.mtimeMs, model, contextTokens };
+  const info = { mtimeMs: st.mtimeMs, model, contextTokens, busy };
   infoCache.set(file, info);
   return info;
 }
 function modelName(cwd, sessionId) { const i = readSessionInfo(cwd, sessionId); return i ? i.model : null; }
 function contextTokens(cwd, sessionId) { const i = readSessionInfo(cwd, sessionId); return i ? i.contextTokens : null; }
+// True while the agent still owes a reply (mid-turn). Content-based, so it stays
+// true through generation/tool gaps and flips off only when the turn closes.
+function isBusy(cwd, sessionId) { const i = readSessionInfo(cwd, sessionId); return i ? !!i.busy : false; }
 
 module.exports = {
   id: 'claude',
@@ -144,6 +168,7 @@ module.exports = {
   newSessionSince,
   sessionFile,
   lastActivity,
+  isBusy,
   modelName,
   contextTokens,
 };
