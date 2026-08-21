@@ -29,8 +29,8 @@ const prCache = new Map();         // branch -> { number, state, merged, url }
 const mergePrompted = new Set();   // "recordId:prNumber" already offered this load (no 60s re-nag)
 const focusedAt = new Map();       // recordId -> ms the user last focused this session's terminal
 const seenMtime = new Map();       // recordId -> last observed session-file mtime (ms)
-const workingUntil = new Map();    // recordId -> ms; the card shows the "working" roll while now < this
-let lastWorkingKey = '';           // de-dupes identical working-set posts to the webview
+const workingUntil = new Map();    // recordId -> ms; hold the "…" roll (over "???") while now < this
+let lastWorkingKey = '';           // de-dupes identical working/waiting posts to the webview
 let selectedId = null;             // recordId whose terminal is the active one (1:1 with the panel highlight)
 let view;                          // SessionsWebview
 
@@ -141,43 +141,52 @@ async function refreshPR() {
   refresh();
 }
 
-// --- Working indicator -------------------------------------------------------
-// A session is "working" while its agent keeps writing to its session file. We
-// only watch the sessions the user actually cares about — one with a live
-// terminal, or one focused in the last few minutes — so old sessions aren't
-// stat()'d every tick. This runs off the slow git/PR ticks (so the roll is
-// responsive) and posts a tiny id-set message rather than a full state refresh
-// (so cards aren't rebuilt mid-animation, which would reset the CSS roll).
-const FOCUS_RECENT_MS = 5 * 60 * 1000;   // keep polling a session this long after it was last focused
-const WORK_GRACE_MS = 2500;              // let the roll trail this long after work stops (smooths a stray misread)
+// --- Working / waiting indicator ---------------------------------------------
+// Each live session shows one of two rolls: an animated "…" while the agent is
+// working, or a static "???" while it's waiting on the user (a question, a plan
+// to approve, a permission prompt, or a finished turn). Only live sessions get a
+// roll. We post a tiny two-set message rather than a full state refresh, so cards
+// aren't rebuilt mid-animation (which would reset the CSS roll).
+const WORK_GRACE_MS = 2500;    // let the "…" roll trail this long before flipping to "???" (smooths transitions)
+const PENDING_WAIT_MS = 5000;  // a tool pending (no progress) this long is treated as a permission prompt -> waiting
+
+// Classify a live session's roll from the provider's activity state. Returns
+// 'work' | 'wait' | null (null = no roll). The ambiguous 'pending' state (a tool
+// call that could be running or blocked on approval) is resolved by how long it
+// has sat without progress. Does NOT apply the work-trailing grace — that's
+// pollActivity's job, so a one-off full render doesn't linger.
+function rollKind(rec) {
+  if (!live.has(rec.id)) return null;                    // only live sessions roll
+  const p = providers[rec.agentId];
+  if (!p) return null;
+  const now = Date.now();
+  if (typeof p.activity === 'function') {
+    const a = p.activity(rec.cwd, rec.sessionId);
+    if (a.status === 'working') return 'work';
+    if (a.status === 'pending') return (now - a.mtimeMs > PENDING_WAIT_MS) ? 'wait' : 'work';
+    return 'wait';                                        // 'waiting' (blocked on user) or 'idle' (turn done)
+  }
+  if (typeof p.lastActivity === 'function') {            // fallback: mtime-delta guess, work-only
+    const t = p.lastActivity(rec.cwd, rec.sessionId);
+    if (t) { const prev = seenMtime.get(rec.id); seenMtime.set(rec.id, t); return prev !== undefined && t > prev ? 'work' : null; }
+  }
+  return null;
+}
+
 function pollActivity() {
   const now = Date.now();
+  const working = [], waiting = [];
   for (const rec of sessions) {
-    const watched = live.has(rec.id) || (now - (focusedAt.get(rec.id) || 0) < FOCUS_RECENT_MS);
-    if (!watched) continue;
-    const p = providers[rec.agentId];
-    if (!p) continue;
-    // Primary signal: does the transcript show the agent mid-turn? This stays
-    // true across generation/tool gaps, so the roll runs continuously until the
-    // turn actually closes — unlike the old mtime-delta guess, which died in
-    // every silent gap. Providers without isBusy fall back to that mtime guess.
-    let busy;
-    if (typeof p.isBusy === 'function') {
-      busy = p.isBusy(rec.cwd, rec.sessionId);
-    } else if (typeof p.lastActivity === 'function') {
-      const t = p.lastActivity(rec.cwd, rec.sessionId);
-      if (t) { const prev = seenMtime.get(rec.id); seenMtime.set(rec.id, t); busy = prev !== undefined && t > prev; }
-    }
-    if (busy) workingUntil.set(rec.id, now + WORK_GRACE_MS);
+    if (!live.has(rec.id)) continue;
+    let kind = rollKind(rec);
+    if (kind === 'work') workingUntil.set(rec.id, now + WORK_GRACE_MS);
+    else if ((workingUntil.get(rec.id) || 0) > now) kind = 'work';   // let the roll trail briefly
+    if (kind === 'work') working.push(rec.id);
+    else if (kind === 'wait') waiting.push(rec.id);
   }
-  // Only a live session (agent process still running) can be "working".
-  const ids = sessions
-    .filter((rec) => live.has(rec.id) && (workingUntil.get(rec.id) || 0) > now)
-    .map((rec) => rec.id);
-  const key = ids.join(',');
-  if (key !== lastWorkingKey) { lastWorkingKey = key; if (view) view.postWorking(ids); }
+  const key = 'w' + working.join(',') + '|q' + waiting.join(',');
+  if (key !== lastWorkingKey) { lastWorkingKey = key; if (view) view.postActivity(working, waiting); }
 }
-function isWorking(rec) { return live.has(rec.id) && (workingUntil.get(rec.id) || 0) > Date.now(); }
 
 // --- View model --------------------------------------------------------------
 function computeCards() {
@@ -249,7 +258,7 @@ function computeCards() {
       checkout,
       context,
       active,
-      working: isWorking(rec),
+      roll: rollKind(rec),   // 'work' | 'wait' | null — initial roll state (postActivity keeps it fresh)
       selected: rec.id === selectedId,
       updated,
       description: rec.label,
@@ -690,10 +699,10 @@ class SessionsWebview {
   post() {
     if (this.view) this.view.webview.postMessage({ type: 'state', ...computeState() });
   }
-  // Lightweight "who's working" update — toggles the roll on existing cards
+  // Lightweight working/waiting update — toggles the roll on existing cards
   // without rebuilding them (a full post() would reset the CSS animation).
-  postWorking(ids) {
-    if (this.view) this.view.webview.postMessage({ type: 'working', ids });
+  postActivity(working, waiting) {
+    if (this.view) this.view.webview.postMessage({ type: 'activity', working, waiting });
   }
   requestForm() {
     vscode.commands.executeCommand('agentsPanel.sessions.focus');

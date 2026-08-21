@@ -77,13 +77,15 @@ button.new .plus { font-size: 15px; line-height: 1; }
   color: var(--vscode-descriptionForeground); opacity: 0.8; white-space: nowrap;
 }
 
-/* rolling "…" activity indicator — shown only while the card is working */
+/* activity glyph — animated "…" while working, static "???" while waiting on you */
 .lag .work { display: none; flex: none; }
-.card.working .lag .work {
+.card.working .lag .work, .card.waiting .lag .work {
   display: inline-block;
-  width: 1.4em;   /* hold width across frames so the row doesn't jitter */
+  min-width: 1.6em;   /* hold width so the row doesn't jitter across frames / states */
   font-family: var(--vscode-editor-font-family, monospace);
   letter-spacing: 1px;
+}
+.card.working .lag .work {
   color: var(--vscode-foreground);   /* theme "white" — an activity ping, not a status color */
 }
 .card.working .lag .work::after {
@@ -91,6 +93,12 @@ button.new .plus { font-size: 15px; line-height: 1; }
   white-space: pre;
   animation: work-roll 0.8s steps(1, end) infinite;
 }
+/* waiting: the agent is blocked on the user (question / plan / permission / done) */
+.card.waiting .lag .work { color: var(--ap-accent); }   /* blue = "your turn / interactive" */
+.card.waiting .lag .work::after { content: '???'; }
+/* if a card is somehow both, "waiting" wins (it's the actionable state) */
+.card.waiting.working .lag .work { color: var(--ap-accent); }
+.card.waiting.working .lag .work::after { content: '???'; animation: none; }
 @keyframes work-roll {
   0%   { content: '...'; }
   25%  { content: ' ..'; }
