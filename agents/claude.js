@@ -122,7 +122,7 @@ function readSessionInfo(cwd, sessionId) {
       }
     }
     // What's the agent doing? Scan the tail backwards for the last meaningful
-    // event (skipping the ai-title / mode / last-prompt metadata lines) and map
+    // event (skipping the ai-title / mode / attachment metadata lines) and map
     // it to one of four states:
     //   idle    - turn closed (a system turn_duration, or an assistant message
     //             with a terminal stop_reason) -> waiting for the next prompt
@@ -133,17 +133,25 @@ function readSessionInfo(cwd, sessionId) {
     //             transcript; the extension resolves it with a staleness timer)
     //   working - last message is a user prompt / tool_result, or assistant
     //             thinking/text mid-turn -> the model owes a reply
-    // This holds across the long silent gaps (generation, slow tools) because the
-    // last message stays put until the next write.
+    // A trailing user message is only "working" if a real turn precedes it. After
+    // /compact, Claude appends the summary as user messages right after a
+    // compact_boundary with no reply owed — so a user run preceded by that
+    // boundary is idle, not working. We keep scanning past trailing user messages
+    // to see what comes before them (an assistant turn = real prompt -> working;
+    // a compact_boundary = compaction summary -> idle). This holds across long
+    // silent gaps because the last message stays put until the next write.
+    let trailingUser = false;
     for (let i = lines.length - 1; i >= 0; i--) {
       const ln = lines[i];
-      if (!ln || (ln.indexOf('"role"') === -1 && ln.indexOf('turn_duration') === -1)) continue;
+      if (!ln || (ln.indexOf('"role"') === -1 && ln.indexOf('turn_duration') === -1 && ln.indexOf('compact_boundary') === -1)) continue;
       let o;
       try { o = JSON.parse(ln); } catch (_) { continue; }  // clipped tail line -> skip
-      if (o.type === 'system' && o.subtype === 'turn_duration') { status = 'idle'; break; }
+      if (o.type === 'system' && o.subtype === 'compact_boundary') { status = 'idle'; break; }  // trailing user run was the /compact summary
+      if (o.type === 'system' && o.subtype === 'turn_duration') { status = trailingUser ? 'working' : 'idle'; break; }
       if (o.type !== 'user' && o.type !== 'assistant') continue;
-      if (o.type === 'user') { status = 'working'; break; }   // model owes a reply
+      if (o.type === 'user') { trailingUser = true; status = 'working'; continue; }  // tentative — look at what precedes it
       const m = o.message || {};
+      if (trailingUser) { status = 'working'; break; }   // user message(s) followed this assistant turn -> real prompt/tool_result
       const sr = m.stop_reason;
       if (sr === 'end_turn' || sr === 'stop_sequence') { status = 'idle'; break; }
       const tool = (Array.isArray(m.content) ? m.content : []).find((b) => b && b.type === 'tool_use');
