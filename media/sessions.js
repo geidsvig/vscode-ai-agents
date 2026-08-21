@@ -36,15 +36,17 @@
     '<circle cx="12" cy="6" r="2.3"/><circle cx="5.5" cy="9.5" r="2"/><circle cx="18.5" cy="11.5" r="2"/></svg>';
 
   // 8-bit "Claw'd" mascot, drawn from a pixel grid into crisp SVG rects.
-  const MASCOT_GRID = [
-    '..XXXXXXXXX..',
-    '.XXXXXXXXXXX.',
-    '.XXXXXXXXXXX.',
-    '.XX.XXXXX.XX.',   // eyes
-    'XXXXXXXXXXXXX',   // arms poke out the sides
-    '.XXXXXXXXXXX.',
-    '.XXXXXXXXXXX.',
-    '..XX.....XX..',   // two legs
+  const MASCOT_GRID = [   // traced from icons8 "Claw'd" (16x10 sprite grid)
+    '..XXXXXXXXXXXX..',
+    '..XXXXXXXXXXXX..',
+    '..XX.XXXXXX.XX..',   // eyes (2 tall)
+    '..XX.XXXXXX.XX..',
+    '..XXXXXXXXXXXX..',
+    'XXXXXXXXXXXXXXXX',   // arms out both sides
+    'XXXXXXXXXXXXXXXX',
+    '..XXXXXXXXXXXX..',
+    '...X.X....X.X...',   // four legs
+    '...X.X....X.X...',
   ];
   const MASCOT = (function (grid, color) {
     const w = grid[0].length, h = grid.length;
@@ -55,7 +57,7 @@
       }
     }
     return '<svg viewBox="0 0 ' + w + ' ' + h + '" fill="' + color + '" shape-rendering="crispEdges">' + rects + '</svg>';
-  })(MASCOT_GRID, '#D97757');
+  })(MASCOT_GRID, '#D77757');
 
   function el(tag, cls, text) {
     const n = document.createElement(tag);
