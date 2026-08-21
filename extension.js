@@ -60,26 +60,27 @@ function findById(idOrNode) {
 }
 
 // --- Terminal orchestration --------------------------------------------------
-function spawn(rec, command, isNew, onReady) {
+function spawn(rec, command, isNew) {
   const term = vscode.window.createTerminal({ name: rec.label, cwd: rec.cwd });
   live.set(rec.id, term);
   term.show(true);
   const autoRun = vscode.workspace.getConfiguration('agentsPanel').get('autoRunResume', true);
   if (command) term.sendText(command, isNew ? true : autoRun);
   refresh();
-  if (isNew) bindSession(rec, onReady);
+  if (isNew) bindSession(rec);
 }
-// Poll for the agent's new session file; binding it also signals the CLI has
-// booted, so `onReady` fires then (used to inject the initial planning prompt).
-function bindSession(rec, onReady) {
+// Poll for the agent's new session file and bind its id to this record. The file
+// isn't created until the first message lands, so binding succeeds only once the
+// session is under way — it can't gate the initial prompt (see primePlanningPrompt).
+function bindSession(rec) {
   const p = providers[rec.agentId];
-  if (!p || typeof p.newSessionSince !== 'function') { if (onReady) onReady(); return; }
+  if (!p || typeof p.newSessionSince !== 'function') return;
   const since = Date.now();
   let tries = 0;
   const iv = setInterval(() => {
     tries += 1;
     const id = p.newSessionSince(rec.cwd, since);
-    if (id && id !== rec.sessionId) { rec.sessionId = id; persist(); clearInterval(iv); if (onReady) onReady(); }
+    if (id && id !== rec.sessionId) { rec.sessionId = id; persist(); clearInterval(iv); }
     else if (tries >= 30) clearInterval(iv);
   }, 1000);
 }
@@ -264,23 +265,39 @@ async function createSession(agentId, dir, desc) {
   };
   sessions.push(rec);
   persist();
-  // For a fresh worktree, prime the agent (once it boots) to plan a branch first.
-  const onReady = isWorktree ? () => injectNewSessionPlan(rec, path.basename(repoRoot)) : null;
-  spawn(rec, provider.launchCommand(cwd), true, onReady);
+  spawn(rec, provider.launchCommand(cwd), true);
+  // For a fresh worktree, prime the agent to plan a branch before any edits.
+  if (isWorktree) primePlanningPrompt(rec, path.basename(repoRoot));
   refreshGit();
 }
 
-// Injected into a brand-new detached worktree session so the agent leads with
-// branch planning before any edits. Submitted as the first turn once the CLI is up.
+// Prime a brand-new detached worktree session so the agent leads with branch
+// planning before any edits. The session .jsonl is created lazily on the first
+// message, so we can't wait for it to know the CLI is ready — send on a
+// launch-relative timer, then confirm a session file appeared (proof the prompt
+// landed) and re-send once if the TUI wasn't ready in time.
+function primePlanningPrompt(rec, project) {
+  const p = providers[rec.agentId];
+  const delay = vscode.workspace.getConfiguration('agentsPanel').get('planPromptDelayMs', 2500);
+  const since = Date.now();
+  setTimeout(() => {
+    injectNewSessionPlan(rec, project);
+    if (!p || typeof p.newSessionSince !== 'function') return;
+    setTimeout(() => {
+      if (live.has(rec.id) && !p.newSessionSince(rec.cwd, since)) injectNewSessionPlan(rec, project);
+    }, 5000);   // still no session file => the first send was dropped; resend once
+  }, delay);
+}
+// Submit the planning prompt as the session's first turn.
 function injectNewSessionPlan(rec, project) {
+  const term = live.get(rec.id);
+  if (!term) return;
   const prompt =
     `[Agents Panel] Work is starting on "${project}". This is a fresh detached worktree with no branch yet. ` +
     `Discuss the task and plan with me first; once the goal is clear, create a well-named git branch for it ` +
     `(git checkout -b <name>) before making changes. What would you like to work on?`;
-  setTimeout(() => {
-    const term = live.get(rec.id);
-    if (term) { term.show(false); try { term.sendText(prompt, true); } catch (_) { /* terminal gone */ } }
-  }, 1200);   // small settle after the session file appears (CLI TUI ready)
+  term.show(false);
+  try { term.sendText(prompt, true); } catch (_) { /* terminal gone */ }
 }
 function cmdNew() { if (view) view.requestForm(); }
 
@@ -374,6 +391,18 @@ async function cmdPr(node) {
   if (!rec) return;
   const branch = rec.branch || (meta.get(rec.id) || {}).branch;
   if (!branch) { vscode.window.showInformationMessage('This session has no branch to open a PR for.'); return; }
+  // A branch with no commits ahead of its base can't back a PR — gh would fail
+  // with a cryptic "no commits between" error. Catch it here with a message the
+  // user can act on (commit first), rather than pushing into that dead end.
+  const base = await gitmod.defaultBranch(rec.cwd);
+  const ahead = await gitmod.commitsAhead(rec.cwd, base, branch);
+  if (ahead === 0) {
+    const m = meta.get(rec.id) || {};
+    vscode.window.showWarningMessage(m.dirty
+      ? `"${branch}" has no commits yet and has uncommitted changes. Commit your work in the session terminal first, then create the PR.`
+      : `"${branch}" has no commits ahead of ${base} — nothing to open a PR for yet.`);
+    return;
+  }
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: `Pushing ${branch}…` },
     async () => {

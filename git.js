@@ -137,6 +137,16 @@ async function pushBranch(cwd, branch) {
   return r.code === 0 ? { ok: true } : { ok: false, error: r.stderr };
 }
 
+// Number of commits on `branch` not yet on `base`. 0 means there's nothing to
+// open a PR for (gh would otherwise fail with a cryptic "no commits between…").
+// null if the count couldn't be computed (e.g. unknown base ref).
+async function commitsAhead(cwd, base, branch) {
+  const r = await git(['rev-list', '--count', `${base}..${branch}`], cwd);
+  if (r.code !== 0) return null;
+  const n = parseInt(r.stdout, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Returns { number, state, url, merged, review } or null if no PR / gh
 // unavailable. `review` is 'approved' | 'blocked' | 'open', derived from
 // GitHub's aggregate reviewDecision (CHANGES_REQUESTED = blocking comments).
@@ -201,5 +211,5 @@ async function prComments(cwd, branch) {
 module.exports = {
   isRepo, info, mainRoot, hasRemote, defaultBranch, slugify,
   addWorktree, promote, returnToMain, isPromotedAt, removeWorktree, deleteBranch,
-  pushBranch, prView, prCreate, prComments,
+  pushBranch, commitsAhead, prView, prCreate, prComments,
 };

@@ -128,6 +128,11 @@
           "default": true,
           "description": "When resuming a session, execute the agent's resume command automatically. If false, the command is pre-typed into the terminal and you press Enter."
         },
+        "agentsPanel.planPromptDelayMs": {
+          "type": "number",
+          "default": 2500,
+          "description": "Delay (ms) after launching a new worktree session before sending the initial branch-planning prompt, giving the agent's CLI time to finish booting. If the prompt is occasionally missed on a slow machine, increase this."
+        },
         "agentsPanel.contextWindowTokens": {
           "type": "number",
           "default": 0,
