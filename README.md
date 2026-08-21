@@ -1,0 +1,76 @@
+# Agents Panel
+
+A small VSCode convenience extension that adds an **Agents** view to the Activity
+Bar (the icon strip on the side, alongside Explorer, Search, Source Control…) for
+tracking AI-agent terminal sessions — so you can re-open and **resume** them after
+a VSCode restart or crash.
+
+It is a *tracker*, not a terminal replacement. Each session is a normal
+integrated terminal running the agent's own CLI. The panel only remembers the
+links (agent + directory + session id) needed to bring a session back.
+
+## Features
+
+- **Agents panel** listing your agent sessions as **active** (a live terminal
+  exists — click to focus) or **inactive** (click to resume).
+- **New Agent** flow: pick an agent, pick a project directory → a terminal opens
+  in that directory, launches the agent, and is tracked automatically.
+- **Lazy restore:** after a restart, sessions reappear as *inactive*. Nothing is
+  launched until you click one — light on resources, no surprise token spend.
+- **Exact resume:** for Claude it binds the on-disk session id, so resuming
+  returns to the right conversation even with several sessions in one directory.
+- Sessions are saved automatically (no manual save). State lives in VSCode
+  `globalState`, per machine.
+
+## Supported agents
+
+- **Claude** (`claude` CLI) — full support (launch + `--resume`).
+- **ChatGPT (Sol)**, **GitHub Copilot** — placeholders; add a provider to enable.
+
+### Adding an agent
+
+Drop a module in `agents/<id>.js` exporting:
+
+```js
+module.exports = {
+  id: 'my-agent', label: 'My Agent', icon: 'sparkle', available: true,
+  launchCommand(cwd) { return 'my-agent'; },
+  resumeCommand(cwd, sessionId) { return `my-agent --resume ${sessionId}`; },
+  // optional, for exact resume binding + reveal:
+  // listSessions(cwd), newSessionSince(cwd, sinceMs), sessionFile(cwd, sessionId),
+};
+```
+
+Then register it in the `providers` map in `extension.js`.
+
+## Install (no build step)
+
+This is plain JavaScript against the built-in `vscode` API — nothing to compile.
+
+```bash
+git clone https://github.com/geidsvig/vscode-ai-agents ~/projects/vscode-ai-agents
+ln -s ~/projects/vscode-ai-agents ~/.vscode/extensions/agents-panel
+```
+
+Restart VSCode. The **Agents** icon appears in the Activity Bar; click it to open
+the **Sessions** view.
+
+To package a `.vsix` instead: `npx @vscode/vsce package` then
+`code --install-extension agents-panel-*.vsix`.
+
+## Settings
+
+- `agentsPanel.autoRunResume` (default `true`) — execute the resume command on
+  click. Set `false` to pre-type it and press Enter yourself.
+
+## Limitations
+
+- A crash kills the terminal process; no extension can revive a live process.
+  "Resume" relaunches the agent and uses the agent's own resume — for Claude
+  that reloads the conversation, which is the point.
+- Tracked sessions are per-machine (they reference that machine's local agent
+  files) and do not sync across computers.
+
+## License
+
+MIT

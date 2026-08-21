@@ -1,0 +1,145 @@
+{
+  "name": "agents-panel",
+  "displayName": "Agents Panel",
+  "description": "Track AI-agent terminal sessions (Claude, and more) in a dedicated panel and re-open/resume them after a VSCode restart.",
+  "version": "0.1.0",
+  "publisher": "geidsvig",
+  "license": "MIT",
+  "icon": "media/falcon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geidsvig/vscode-ai-agents"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentsPanel",
+          "title": "Agents",
+          "icon": "media/ai-box.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentsPanel": [
+        {
+          "id": "agentsPanel.sessions",
+          "name": "Sessions",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agentsPanel.new",
+        "title": "New Agent",
+        "category": "Agents",
+        "icon": "$(add)"
+      },
+      {
+        "command": "agentsPanel.openOrResume",
+        "title": "Open / Resume",
+        "category": "Agents"
+      },
+      {
+        "command": "agentsPanel.resume",
+        "title": "Resume Session",
+        "category": "Agents",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "agentsPanel.focus",
+        "title": "Focus Terminal",
+        "category": "Agents",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "agentsPanel.rename",
+        "title": "Rename",
+        "category": "Agents",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "agentsPanel.remove",
+        "title": "Remove From List",
+        "category": "Agents",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "agentsPanel.revealSession",
+        "title": "Reveal Session File",
+        "category": "Agents"
+      },
+      {
+        "command": "agentsPanel.setAsMain",
+        "title": "Set as Main (test in root)",
+        "category": "Agents",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "agentsPanel.returnToMain",
+        "title": "Return Root to Main",
+        "category": "Agents",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "agentsPanel.pr",
+        "title": "Create / Update PR",
+        "category": "Agents",
+        "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "agentsPanel.reviewPr",
+        "title": "Review PR Comments",
+        "category": "Agents",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "agentsPanel.startNewTask",
+        "title": "Start New Task",
+        "category": "Agents",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "agentsPanel.planNext",
+        "title": "Plan Next Task With Agent",
+        "category": "Agents",
+        "icon": "$(lightbulb)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentsPanel.new",
+          "when": "view == agentsPanel.sessions",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Agents Panel",
+      "properties": {
+        "agentsPanel.autoRunResume": {
+          "type": "boolean",
+          "default": true,
+          "description": "When resuming a session, execute the agent's resume command automatically. If false, the command is pre-typed into the terminal and you press Enter."
+        },
+        "agentsPanel.contextWindowTokens": {
+          "type": "number",
+          "default": 0,
+          "description": "Context window size (tokens) used to compute the usage bar. 0 = auto-detect (200k, or 1M once a session's usage exceeds 200k)."
+        }
+      }
+    }
+  }
+}
