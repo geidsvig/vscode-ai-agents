@@ -24,6 +24,17 @@
 
   vscode.postMessage({ action: 'ready' });
 
+  // Checkout-type glyphs (theme-aware via currentColor). Main = git-branch;
+  // worktree = a small tree. Rendered inline so CSS can recolor them.
+  const ICON_MAIN =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
+    '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/>' +
+    '<path d="M6 8.5v1.5a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V8.5"/><path d="M12 13v2.5"/></svg>';
+  const ICON_WORKTREE =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M12 21V8.5"/><path d="M12 14l-5-3.5"/><path d="M12 16l5-3.5"/>' +
+    '<circle cx="12" cy="6" r="2.3"/><circle cx="5.5" cy="9.5" r="2"/><circle cx="18.5" cy="11.5" r="2"/></svg>';
+
   function el(tag, cls, text) {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
@@ -71,15 +82,24 @@
       card.appendChild(ctx);
     }
 
-    // Row 2: branch  [PR / merged / worktree status]
+    // Row 2: [checkout icon] branch  [merged status]  [PR badge]
     const l2 = el('div', 'l2');
+    if (kind === 'main' || kind === 'worktree') {
+      const ic = el('span', 'ctype ctype-' + kind);
+      ic.innerHTML = kind === 'main' ? ICON_MAIN : ICON_WORKTREE;
+      ic.title = kind === 'main' ? "On the repo's main checkout" : 'Running in a git worktree';
+      l2.appendChild(ic);
+    }
     if (c.branch) {
       const b = el('span', 'branch');
       b.appendChild(el('span', null, c.branch));
       if (c.dirty) b.appendChild(el('span', 'dirty', ' *'));
       l2.appendChild(b);
     }
-    if (c.status && c.status.text) l2.appendChild(el('span', 'status', c.status.text));
+    // main/worktree are now shown as the icon; keep other status text (e.g. merged).
+    if (c.status && c.status.text && kind !== 'main' && kind !== 'worktree') {
+      l2.appendChild(el('span', 'status', c.status.text));
+    }
     if (!c.branch && !(c.status && c.status.text) && !c.prBadge) l2.appendChild(el('span', 'branch muted', 'no branch'));
     // Right-aligned PR badge: green approved / red blocked / white otherwise.
     if (c.prBadge) {

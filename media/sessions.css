@@ -26,13 +26,16 @@ button.new .plus { font-size: 15px; line-height: 1; }
   position: relative;
   padding: 7px 12px 7px 16px;
   cursor: pointer;
-  border-left: 2px solid transparent;
 }
 .card:hover { background: var(--vscode-list-hoverBackground); }
 .card.inactive { opacity: 0.75; }
-.card.k-main    { border-left-color: var(--vscode-charts-green); }
-.card.k-merged  { border-left-color: var(--vscode-charts-purple); }
-.card.k-pr      { border-left-color: var(--vscode-charts-blue); }
+
+/* checkout-type icon on row 2: git-branch = main checkout, tree = worktree.
+   (PR/merged state is already shown by the [PR] badge and "merged" chip.) */
+.l2 .ctype { display: inline-flex; align-items: center; flex: none; }
+.l2 .ctype svg { width: 13px; height: 13px; display: block; }
+.ctype-main { color: var(--vscode-charts-green); }
+.ctype-worktree { color: var(--vscode-descriptionForeground); }
 
 /* the session whose terminal is currently active — 1:1 with the focused terminal */
 .card.selected {
