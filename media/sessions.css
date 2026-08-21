@@ -61,6 +61,27 @@ button.new .plus { font-size: 15px; line-height: 1; }
   color: var(--vscode-descriptionForeground); opacity: 0.8; white-space: nowrap;
 }
 
+/* rolling "…" activity indicator — shown only while the card is working */
+.lag .work { display: none; flex: none; }
+.card.working .lag .work {
+  display: inline-block;
+  width: 1.4em;   /* hold width across frames so the row doesn't jitter */
+  font-family: var(--vscode-editor-font-family, monospace);
+  letter-spacing: 1px;
+  color: var(--vscode-charts-green, var(--vscode-foreground));
+}
+.card.working .lag .work::after {
+  content: '...';
+  white-space: pre;
+  animation: work-roll 0.8s steps(1, end) infinite;
+}
+@keyframes work-roll {
+  0%   { content: '...'; }
+  25%  { content: ' ..'; }
+  50%  { content: '. .'; }
+  75%  { content: '.. '; }
+}
+
 /* context-usage bar (row 1.5) */
 .ctx { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
 .ctx-track { flex: 1; height: 4px; border-radius: 3px; background: rgba(127,127,127,0.25); overflow: hidden; }
