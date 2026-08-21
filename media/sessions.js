@@ -42,7 +42,6 @@
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" ' +
     'stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>';
   const MENU_ICON = {
-    terminal: svg('<rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2.3 2-2.3 2"/><path d="M8.3 10.5h3.2"/>'),
     review:   svg('<path d="M1.5 8S4 3.8 8 3.8 14.5 8 14.5 8 12 12.2 8 12.2 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/>'),
     rename:   svg('<path d="M10.6 2.4l3 3"/><path d="M9.7 3.3 3 10v3h3l6.7-6.7-3-3Z"/>'),
     file:     svg('<path d="M4 1.8h5l3 3v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1Z"/><path d="M9 1.8v3.2h3"/>'),
@@ -206,9 +205,9 @@
 
   // --- context menu ---
   function items(c) {
+    // Left-clicking the card already focuses/resumes the session, so the menu
+    // omits that action and leads with the things a click can't do.
     const out = [];
-    out.push({ label: c.active ? 'Focus terminal' : 'Resume session', action: 'open', icon: MENU_ICON.terminal });
-    out.push({ sep: true });
     out.push({ label: 'Review session', action: 'reviewSession', icon: MENU_ICON.review });
     out.push({ label: 'Rename', do: () => openRenameForm(c), icon: MENU_ICON.rename });
     if (c.canReveal) out.push({ label: 'Reveal session file', action: 'reveal', icon: MENU_ICON.file });
