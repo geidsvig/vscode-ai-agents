@@ -81,7 +81,11 @@ function friendlyModel(id) {
 // tokens = the last request's prompt size (input + cache read + cache creation),
 // i.e. everything currently in the window.
 const TAIL_BYTES = 256 * 1024;
-const infoCache = new Map(); // filePath -> { mtimeMs, model, contextTokens }
+const infoCache = new Map(); // filePath -> { mtimeMs, model, contextTokens, status }
+// Tools that block on the user and never run on their own — a pending call to one
+// of these means "waiting for you", not "working" (unlike Bash/Edit/etc., which a
+// pending call can't be told apart from mid-execution and so get a time-based guess).
+const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 function readSessionInfo(cwd, sessionId) {
   // Prefer the record's bound session; fall back to the newest session in the cwd
   // so an unbound record still shows a model/context gauge (as lastActivity does).
@@ -96,7 +100,7 @@ function readSessionInfo(cwd, sessionId) {
   if (!file) return null;
   const cached = infoCache.get(file);
   if (cached && cached.mtimeMs === st.mtimeMs) return cached;
-  let model = null, contextTokens = null;
+  let model = null, contextTokens = null, status = 'idle';
   try {
     const start = Math.max(0, st.size - TAIL_BYTES);
     const len = st.size - start;
@@ -117,13 +121,77 @@ function readSessionInfo(cwd, sessionId) {
         if (t > 0) contextTokens = t;
       }
     }
+    // What's the agent doing? Scan the tail backwards for the last meaningful
+    // event (skipping the ai-title / mode / attachment metadata lines) and map
+    // it to one of four states:
+    //   idle    - turn closed (a system turn_duration, or an assistant message
+    //             with a terminal stop_reason) -> waiting for the next prompt
+    //   waiting - last message is an unresolved call to an interactive tool
+    //             (AskUserQuestion / ExitPlanMode) -> blocked on the user
+    //   pending - last message is an unresolved call to any other tool -> either
+    //             running or blocked on a permission prompt (ambiguous from the
+    //             transcript; the extension resolves it with a staleness timer)
+    //   working - last message is a user prompt / tool_result, or assistant
+    //             thinking/text mid-turn -> the model owes a reply
+    // A trailing user message is only "working" if a real turn precedes it. After
+    // /compact, Claude appends the summary as user messages right after a
+    // compact_boundary with no reply owed — so a user run preceded by that
+    // boundary is idle, not working. We keep scanning past trailing user messages
+    // to see what comes before them (an assistant turn = real prompt -> working;
+    // a compact_boundary = compaction summary -> idle). This holds across long
+    // silent gaps because the last message stays put until the next write.
+    let trailingUser = false;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const ln = lines[i];
+      if (!ln || (ln.indexOf('"role"') === -1 && ln.indexOf('turn_duration') === -1 && ln.indexOf('compact_boundary') === -1)) continue;
+      let o;
+      try { o = JSON.parse(ln); } catch (_) { continue; }  // clipped tail line -> skip
+      if (o.type === 'system' && o.subtype === 'compact_boundary') { status = 'idle'; break; }  // trailing user run was the /compact summary
+      if (o.type === 'system' && o.subtype === 'turn_duration') { status = trailingUser ? 'working' : 'idle'; break; }
+      if (o.type !== 'user' && o.type !== 'assistant') continue;
+      if (o.type === 'user') { trailingUser = true; status = 'working'; continue; }  // tentative — look at what precedes it
+      const m = o.message || {};
+      if (trailingUser) { status = 'working'; break; }   // user message(s) followed this assistant turn -> real prompt/tool_result
+      const sr = m.stop_reason;
+      if (sr === 'end_turn' || sr === 'stop_sequence') { status = 'idle'; break; }
+      const tool = (Array.isArray(m.content) ? m.content : []).find((b) => b && b.type === 'tool_use');
+      if (tool) { status = INTERACTIVE_TOOLS.has(tool.name) ? 'waiting' : 'pending'; break; }
+      status = 'working';   // assistant thinking/text mid-turn
+      break;
+    }
   } catch (_) { /* unreadable */ }
-  const info = { mtimeMs: st.mtimeMs, model, contextTokens };
+  const info = { mtimeMs: st.mtimeMs, model, contextTokens, status };
   infoCache.set(file, info);
   return info;
 }
 function modelName(cwd, sessionId) { const i = readSessionInfo(cwd, sessionId); return i ? i.model : null; }
 function contextTokens(cwd, sessionId) { const i = readSessionInfo(cwd, sessionId); return i ? i.contextTokens : null; }
+
+// Best-effort context-window size. The session file never records it, so we can't
+// read it per-session; instead we default to Claude's standard 200k and upgrade to
+// 1M when the user's selected model carries the "[1m]" tag (Claude Code's 1M beta),
+// as stored in ~/.claude/settings.json. Cached by that file's mtime.
+const SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json');
+let settingsCache = { mtimeMs: -1, has1m: false };
+function has1mModel() {
+  try {
+    const st = fs.statSync(SETTINGS_FILE);
+    if (st.mtimeMs !== settingsCache.mtimeMs) {
+      let has1m = false;
+      try { has1m = /\[1m\]/i.test(JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')).model || ''); } catch (_) {}
+      settingsCache = { mtimeMs: st.mtimeMs, has1m };
+    }
+    return settingsCache.has1m;
+  } catch (_) { return false; }
+}
+function contextWindow() { return has1mModel() ? 1000000 : 200000; }
+// Activity state + file mtime, for the panel's working/waiting roll. status is one
+// of working | waiting | pending | idle (see readSessionInfo); the caller times the
+// ambiguous "pending" state to decide working-vs-waiting.
+function activity(cwd, sessionId) {
+  const i = readSessionInfo(cwd, sessionId);
+  return i ? { status: i.status, mtimeMs: i.mtimeMs } : { status: 'idle', mtimeMs: 0 };
+}
 
 module.exports = {
   id: 'claude',
@@ -144,6 +212,8 @@ module.exports = {
   newSessionSince,
   sessionFile,
   lastActivity,
+  activity,
   modelName,
   contextTokens,
+  contextWindow,
 };

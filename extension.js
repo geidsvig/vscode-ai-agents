@@ -29,8 +29,8 @@ const prCache = new Map();         // branch -> { number, state, merged, url }
 const mergePrompted = new Set();   // "recordId:prNumber" already offered this load (no 60s re-nag)
 const focusedAt = new Map();       // recordId -> ms the user last focused this session's terminal
 const seenMtime = new Map();       // recordId -> last observed session-file mtime (ms)
-const workingUntil = new Map();    // recordId -> ms; the card shows the "working" roll while now < this
-let lastWorkingKey = '';           // de-dupes identical working-set posts to the webview
+const workingUntil = new Map();    // recordId -> ms; hold the "…" roll (over "???") while now < this
+let lastWorkingKey = '';           // de-dupes identical working/waiting posts to the webview
 let selectedId = null;             // recordId whose terminal is the active one (1:1 with the panel highlight)
 let view;                          // SessionsWebview
 
@@ -141,36 +141,60 @@ async function refreshPR() {
   refresh();
 }
 
-// --- Working indicator -------------------------------------------------------
-// A session is "working" while its agent keeps writing to its session file. We
-// only watch the sessions the user actually cares about — one with a live
-// terminal, or one focused in the last few minutes — so old sessions aren't
-// stat()'d every tick. This runs off the slow git/PR ticks (so the roll is
-// responsive) and posts a tiny id-set message rather than a full state refresh
-// (so cards aren't rebuilt mid-animation, which would reset the CSS roll).
-const FOCUS_RECENT_MS = 5 * 60 * 1000;   // keep polling a session this long after it was last focused
-const WORK_GRACE_MS = 2500;              // hold "working" this long past the last file change (spans write gaps)
+// --- Activity roll ------------------------------------------------------------
+// Each live session shows one of three rolls: an animated "…" while the agent is
+// working, a static "???" while it's blocked on the user (a question, a plan to
+// approve, a permission prompt), or a static ":>" when it's done and idle at the
+// prompt (free for a new command). Only live sessions get a roll. We post a tiny
+// id-set message rather than a full state refresh, so cards aren't rebuilt
+// mid-animation (which would reset the CSS roll).
+const WORK_GRACE_MS = 2500;    // let the "…" roll trail this long before flipping to "???" / ":>" (smooths transitions)
+const PENDING_WAIT_MS = 5000;  // a tool pending (no progress) this long is treated as a permission prompt -> waiting
+
+// Classify a live session's roll from the provider's activity state. The
+// ambiguous 'pending' state (a tool call that could be running or blocked on a
+// permission prompt) is resolved by how long it has sat without progress. Does
+// NOT apply the work-trailing grace — that's pollActivity's job, so a one-off
+// full render doesn't linger.
+// Returns 'work' | 'ask' | 'ready' | null:
+//   work  → "…"  the agent is actively working
+//   ask   → "???" blocked on the user (a question, a plan, or a permission
+//           prompt) — a response is required before it can continue
+//   ready → ":>" done and idle at the prompt — free for any new command
+function rollKind(rec) {
+  if (!live.has(rec.id)) return null;                    // only live sessions roll
+  const p = providers[rec.agentId];
+  if (!p) return null;
+  const now = Date.now();
+  if (typeof p.activity === 'function') {
+    const a = p.activity(rec.cwd, rec.sessionId);
+    if (a.status === 'working') return 'work';
+    if (a.status === 'waiting') return 'ask';            // blocked: question / plan approval
+    if (a.status === 'pending') return (now - a.mtimeMs > PENDING_WAIT_MS) ? 'ask' : 'work';  // permission prompt once stale
+    return 'ready';                                       // idle: turn done, awaiting a new command
+  }
+  if (typeof p.lastActivity === 'function') {            // fallback: mtime-delta guess (can't detect "blocked")
+    const t = p.lastActivity(rec.cwd, rec.sessionId);
+    if (t) { const prev = seenMtime.get(rec.id); seenMtime.set(rec.id, t); return prev !== undefined && t > prev ? 'work' : 'ready'; }
+  }
+  return 'ready';
+}
+
 function pollActivity() {
   const now = Date.now();
+  const working = [], asking = [], ready = [];
   for (const rec of sessions) {
-    const watched = live.has(rec.id) || (now - (focusedAt.get(rec.id) || 0) < FOCUS_RECENT_MS);
-    if (!watched) continue;
-    const p = providers[rec.agentId];
-    if (!p || typeof p.lastActivity !== 'function') continue;
-    const t = p.lastActivity(rec.cwd, rec.sessionId);
-    if (!t) continue;
-    const prev = seenMtime.get(rec.id);
-    seenMtime.set(rec.id, t);
-    if (prev !== undefined && t > prev) workingUntil.set(rec.id, now + WORK_GRACE_MS);
+    if (!live.has(rec.id)) continue;
+    let kind = rollKind(rec);
+    if (kind === 'work') workingUntil.set(rec.id, now + WORK_GRACE_MS);
+    else if ((workingUntil.get(rec.id) || 0) > now) kind = 'work';   // let the roll trail briefly
+    if (kind === 'work') working.push(rec.id);
+    else if (kind === 'ask') asking.push(rec.id);
+    else if (kind === 'ready') ready.push(rec.id);
   }
-  // Only a live session (agent process still running) can be "working".
-  const ids = sessions
-    .filter((rec) => live.has(rec.id) && (workingUntil.get(rec.id) || 0) > now)
-    .map((rec) => rec.id);
-  const key = ids.join(',');
-  if (key !== lastWorkingKey) { lastWorkingKey = key; if (view) view.postWorking(ids); }
+  const key = 'w' + working.join(',') + '|a' + asking.join(',') + '|r' + ready.join(',');
+  if (key !== lastWorkingKey) { lastWorkingKey = key; if (view) view.postActivity(working, asking, ready); }
 }
-function isWorking(rec) { return live.has(rec.id) && (workingUntil.get(rec.id) || 0) > Date.now(); }
 
 // --- View model --------------------------------------------------------------
 function computeCards() {
@@ -214,14 +238,17 @@ function computeCards() {
     let model = null;
     if (typeof p.modelName === 'function') model = p.modelName(rec.cwd, rec.sessionId) || null;
 
-    // Context-window usage bar. The session file doesn't record the window size,
-    // and Claude has only two (200k / 1M), so infer: >200k used ⇒ 1M. Overridable.
+    // Context-window usage bar. The session file never records the window size, so
+    // we take the provider's best guess (200k, or 1M when the user's selected model
+    // carries the [1m] tag) and let the setting override it. The used>window bump is
+    // a floor so we never render >100% if the guess is low.
     let context = null;
     if (typeof p.contextTokens === 'function') {
       const used = p.contextTokens(rec.cwd, rec.sessionId);
       if (used) {
         const cfg = vscode.workspace.getConfiguration('agentsPanel').get('contextWindowTokens', 0);
-        const window = cfg && cfg > 0 ? cfg : (used > 200000 ? 1000000 : 200000);
+        let window = cfg && cfg > 0 ? cfg : (typeof p.contextWindow === 'function' ? p.contextWindow(rec.cwd, rec.sessionId) : 200000);
+        if (!(cfg && cfg > 0) && used > window) window = 1000000;
         context = { pct: Math.min(100, Math.round((used / window) * 100)), used, window };
       }
     }
@@ -242,7 +269,7 @@ function computeCards() {
       checkout,
       context,
       active,
-      working: isWorking(rec),
+      roll: rollKind(rec),   // 'work' | 'ask' | 'ready' | null — initial roll state (postActivity keeps it fresh)
       selected: rec.id === selectedId,
       updated,
       description: rec.label,
@@ -683,10 +710,10 @@ class SessionsWebview {
   post() {
     if (this.view) this.view.webview.postMessage({ type: 'state', ...computeState() });
   }
-  // Lightweight "who's working" update — toggles the roll on existing cards
+  // Lightweight roll update — toggles working/asking/ready on existing cards
   // without rebuilding them (a full post() would reset the CSS animation).
-  postWorking(ids) {
-    if (this.view) this.view.webview.postMessage({ type: 'working', ids });
+  postActivity(working, asking, ready) {
+    if (this.view) this.view.webview.postMessage({ type: 'activity', working, asking, ready });
   }
   requestForm() {
     vscode.commands.executeCommand('agentsPanel.sessions.focus');
