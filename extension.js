@@ -15,6 +15,7 @@ const STATE_KEY = 'agentsPanel.sessions.v1';
 const PROMO_KEY = 'agentsPanel.promoted.v1'; // { [repoRoot]: branch } currently loaded into that root
 const TERMS_KEY = 'agentsPanel.terminals.v1'; // names of terminals this panel created, for stale cleanup after a restart
 const ORDER_KEY = 'agentsPanel.orderSeeded.v1'; // one-time flag: sessions[] now holds the user's manual order
+const DEFAULT_SESSION_COLOR = '#3A9FE8';     // Azure — the default identity color (matches the current blue)
 
 // --- Agent provider registry -------------------------------------------------
 const providers = {
@@ -72,6 +73,8 @@ function persist() {
     repoRoot: s.repoRoot || null, branch: s.branch || null,
     worktreePath: s.worktreePath || null, isWorktree: !!s.isWorktree,
     mergedHandledPr: s.mergedHandledPr || null, termName: s.termName || null,
+    color: s.color || null,   // user-picked session identity color (hex); null = default
+
   }));
   ctx.globalState.update(STATE_KEY, data);
   refresh();
@@ -323,6 +326,8 @@ function computeCards() {
       prBadge: pr && !merged ? { number: pr.number, review: pr.review || 'open' } : null,
       merged,
       checkout,
+      isMain,                                   // drives the branch-icon color (accent when main, muted otherwise)
+      color: rec.color || DEFAULT_SESSION_COLOR, // identity color: rail + progress fill only
       context,
       active,
       roll: rollKind(rec),   // 'work' | 'ask' | 'ready' | null — initial roll state (postActivity keeps it fresh)
@@ -427,7 +432,7 @@ function reportSync(sync) {
   }
 }
 
-async function createSession(agentId, dir, desc) {
+async function createSession(agentId, dir, desc, color) {
   const provider = providers[agentId];
   if (!provider || !provider.available) { vscode.window.showErrorMessage('Unknown or unavailable agent.'); return; }
   if (!dir) { vscode.window.showErrorMessage('No directory selected.'); return; }
@@ -457,6 +462,7 @@ async function createSession(agentId, dir, desc) {
   const rec = {
     id: genId(), agentId, cwd, label, sessionId: null, createdAt: Date.now(),
     repoRoot, branch: null, worktreePath, isWorktree,
+    color: color || null,
   };
   sessions.unshift(rec);   // new work goes to the top of the manually-ordered list
   persist();
@@ -536,6 +542,14 @@ async function cmdRename(node) {
 function renameTo(id, value) {
   const rec = findById(id);
   if (rec && value && value.trim()) { rec.label = value.trim(); persist(); }
+}
+// Set (or clear) a session's identity color. Only affects the left rail + the
+// context-bar fill; everything else is theme/semantic-colored (see computeCards).
+function setColor(id, color) {
+  const rec = findById(id);
+  if (!rec) return;
+  rec.color = color && /^#[0-9a-fA-F]{6}$/.test(color) ? color : null;
+  persist();
 }
 async function cmdRevealSession(node) {
   const rec = findById(node);
@@ -887,8 +901,9 @@ class SessionsWebview {
         if (this.view) this.view.webview.postMessage({ type: 'browsed', path: uris && uris[0] ? uris[0].fsPath : null });
         break;
       }
-      case 'create': createSession(msg.agentId, msg.cwd, msg.desc); break;
+      case 'create': createSession(msg.agentId, msg.cwd, msg.desc, msg.color); break;
       case 'rename': renameTo(id, msg.value); break;
+      case 'setColor': setColor(id, msg.color); break;
       case 'open': cmdOpenOrResume(id); break;
       case 'reveal': cmdRevealSession(id); break;
       case 'setMain': cmdSetAsMain(id); break;

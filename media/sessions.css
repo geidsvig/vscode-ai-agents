@@ -2,26 +2,26 @@
   color-scheme: light dark;
   /* Restrained plugin palette — reserved strictly by meaning. Structural
      surfaces/text stay on VS Code theme vars; these carry semantic state only.
-       blue  = plugin / navigation / selection
-       coral = agent / model identity
+       blue = plugin / navigation / selection / main-checkout branch icon
      The working "…" roll is theme white (activity ping, not a status color).
+     The Claw'd mascot rides the muted metadata color, not a palette color.
+     The user-selected session identity color lives on .card (--session-color)
+     and is applied to ONLY the left rail + context-bar fill (see below).
      Values below are the dark-theme defaults; the body.vscode-* blocks retune
      them per theme (VS Code stamps vscode-light / vscode-dark / vscode-high-
      contrast[-light] on <body>). Tweak per theme there. */
   --ap-accent: #3a8fc2;         /* context bar, branch, primary interactions */
   --ap-select-border: #31566b;  /* selected-card border */
   --ap-select-bg: #17232a;      /* selected-card tint */
-  --ap-agent: #b86f55;          /* Claw'd mascot / model glyph */
 }
 /* Light themes: the near-black selected tint would be a dark blob on a light
    row, so swap to a faint blue wash + a soft steel border, and deepen the
-   accent/coral a touch so the thin bar, branch icon, and mascot hold contrast
+   accent a touch so the thin bar and main-checkout branch icon hold contrast
    on white. */
 body.vscode-light {
   --ap-accent: #2f7bab;
   --ap-select-border: #7ea9c9;
   --ap-select-bg: #e8f1f8;
-  --ap-agent: #ab5f45;
 }
 /* High-contrast (dark or light): no tint — accessibility themes carry meaning
    in borders, so lean on VS Code's own contrast border and drop the fill. */
@@ -30,7 +30,7 @@ body.vscode-high-contrast-light {
   --ap-select-bg: transparent;
   --ap-select-border: var(--vscode-contrastActiveBorder, var(--vscode-focusBorder, currentColor));
 }
-body.vscode-high-contrast-light { --ap-accent: #2f7bab; --ap-agent: #ab5f45; }
+body.vscode-high-contrast-light { --ap-accent: #2f7bab; }
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -66,16 +66,30 @@ button.new .plus { font-size: 15px; line-height: 1; }
   position: relative;
   padding: 7px 12px 7px 16px;
   cursor: pointer;
+  /* User-selected session identity color. Applied to ONLY two places: the left
+     rail and the context-bar fill. JS overrides this per card via inline style;
+     this is the fallback default (Azure). Never propagate it to text/icons. */
+  --session-color: #3A9FE8;
 }
 .card:hover { background: var(--vscode-list-hoverBackground); }
 .card.inactive { opacity: 0.75; }
+
+/* 3px identity rail down the left edge, painted from --session-color. */
+.color-rail {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px; border-radius: 3px 0 0 3px;
+  background: var(--session-color);
+}
 
 /* checkout-type icon on row 2: git-branch = main checkout, tree = worktree.
    (PR/merged state is already shown by the [PR] badge and "merged" chip.) */
 .l2 .ctype { display: inline-flex; align-items: center; flex: none; }
 .l2 .ctype svg { width: 13px; height: 13px; display: block; }
-.ctype-main { color: var(--ap-accent); }
-.ctype-worktree { color: var(--vscode-descriptionForeground); }
+/* Branch icon is muted (timestamp color) by default, and lifts to the theme
+   accent only when this session is the main / active-for-testing checkout.
+   It deliberately does NOT use the session identity color. */
+.ctype { color: var(--vscode-descriptionForeground); }
+.ctype.is-main { color: var(--ap-accent); }
 
 /* the session whose terminal is currently active — 1:1 with the focused terminal.
    Muted blue-gray outline + a barely-blue tint: reads as "selected", not "warning".
@@ -116,8 +130,10 @@ body.dnd { cursor: grabbing; user-select: none; }
 
 /* agent row: [mascot / provider] model  <session-id> */
 .lag { display: flex; align-items: center; gap: 6px; margin-top: 2px; min-width: 0; }
-.lag .mascot { display: inline-flex; align-items: center; flex: none; color: var(--ap-agent); }
-.lag .mascot svg { height: 13px; width: auto; display: block; }   /* fill=currentColor -> follows --ap-agent per theme */
+/* Claw'd mascot rides the muted metadata color (timestamp gray), not coral —
+   only the project name stays bright, so the rows read as quiet metadata. */
+.lag .mascot { display: inline-flex; align-items: center; flex: none; color: var(--vscode-descriptionForeground); }
+.lag .mascot svg { height: 13px; width: auto; display: block; }   /* fill=currentColor -> follows the muted color per theme */
 .lag .agent { color: var(--vscode-descriptionForeground); white-space: nowrap; }
 .lag .sid {
   margin-left: auto; flex: none;
@@ -161,9 +177,10 @@ body.dnd { cursor: grabbing; user-select: none; }
 /* context-usage bar (row 1.5) */
 .ctx { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
 .ctx-track { flex: 1; height: 4px; border-radius: 3px; background: rgba(127,127,127,0.25); overflow: hidden; }
-.ctx-fill { height: 100%; border-radius: 3px; background: var(--ap-accent); transition: width 0.3s ease; }
-.ctx-fill.warm { background: var(--vscode-charts-yellow); }
-.ctx-fill.hot  { background: var(--vscode-charts-red); }
+/* Fill is painted from the session identity color so it matches the left rail.
+   (The warm/hot classes are still emitted by JS but no longer recolor the fill —
+   the bar is an identity meter now, not a green→yellow→red pressure gauge.) */
+.ctx-fill { height: 100%; border-radius: 3px; background: var(--session-color); transition: width 0.3s ease; }
 .ctx-pct { font-size: 10px; color: var(--vscode-descriptionForeground); white-space: nowrap; min-width: 30px; text-align: right; }
 
 /* row 2: branch  [PR / merged / worktree status] */
@@ -183,12 +200,13 @@ body.dnd { cursor: grabbing; user-select: none; }
 .l2 .pr-badge.pr-open     { color: var(--vscode-foreground); }
 
 /* row 3: description */
+/* Description stays at the muted timestamp color even on the active card — the
+   project name is the only element that reads bright, which makes the list scan. */
 .l3 {
   margin-top: 2px;
   color: var(--vscode-descriptionForeground);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.card.active .l3 { color: var(--vscode-foreground); }
 
 /* context menu */
 .menu {
@@ -206,6 +224,7 @@ body.dnd { cursor: grabbing; user-select: none; }
 .menu .mi:hover .mi-ic { opacity: 1; }
 .menu .mi.danger { color: var(--vscode-errorForeground); }
 .menu .sepline { height: 1px; margin: 4px 6px; background: var(--vscode-menu-separatorBackground, rgba(128,128,128,0.35)); }
+.menu .mi-head { padding: 3px 12px 1px; font-size: 11px; color: var(--vscode-descriptionForeground); }
 
 /* modal popup */
 .overlay {
@@ -237,3 +256,19 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
 button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
 .hidden { display: none; }
+
+/* Session-color swatch picker — shared by the New-Agent modal field and the
+   right-click menu. A row of round chips; the chosen one gets a ring. */
+.swatches { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.menu .swatches { padding: 6px 12px 8px; }
+.swatch {
+  width: 17px; height: 17px; padding: 0; border-radius: 50%;
+  border: 2px solid transparent; background: var(--sw); cursor: pointer;
+  outline: none; transition: transform 0.08s ease;
+}
+.swatch:hover { transform: scale(1.18); }
+.swatch:focus-visible { box-shadow: 0 0 0 2px var(--vscode-focusBorder); }
+.swatch.sel {
+  border-color: var(--vscode-foreground);
+  box-shadow: 0 0 0 1px var(--vscode-editorWidget-background, var(--vscode-editor-background)) inset;
+}
