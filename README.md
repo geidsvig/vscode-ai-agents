@@ -28,6 +28,10 @@ links (agent + directory + session id) needed to bring a session back.
   … does not exist").
 - **Exact resume:** for Claude it binds the on-disk session id, so resuming
   returns to the right conversation even with several sessions in one directory.
+- **Manual ordering:** the list stays where you put it — activity only refreshes
+  a card's "updated" time, it never re-sorts. Long-press a card and drag it to a
+  new slot (a rule shows where it will land); drop it off the list to cancel.
+  New sessions appear at the top.
 - Sessions are saved automatically (no manual save). State lives in VSCode
   `globalState`, per machine.
 
