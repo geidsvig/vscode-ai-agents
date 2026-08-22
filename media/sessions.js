@@ -6,13 +6,20 @@
   let overlayEl = null;
   let agents = [];
   let folders = [];
+  let pendingCards = null;   // state that arrived mid-drag; applied once the card is dropped
   let dirSelectRef = null; // active New-form directory <select>, for Browse round-trip
 
   document.getElementById('new').addEventListener('click', openNewForm);
 
   window.addEventListener('message', (e) => {
     const d = e.data || {};
-    if (d.type === 'state') { agents = d.agents || []; folders = d.folders || []; render(d.cards || []); }
+    if (d.type === 'state') {
+      agents = d.agents || []; folders = d.folders || [];
+      // Rebuilding the list mid-drag would yank the card out from under the
+      // cursor, so hold the update until the drop lands.
+      if (drag) pendingCards = d.cards || [];
+      else render(d.cards || []);
+    }
     else if (d.type === 'activity') { applyActivity(d.working || [], d.asking || [], d.ready || []); }
     else if (d.type === 'openForm') { openNewForm(); }
     else if (d.type === 'browsed') { onBrowsed(d.path); }
@@ -20,7 +27,7 @@
 
   document.addEventListener('click', closeMenu);
   document.addEventListener('contextmenu', (e) => { if (!e.target.closest('.card')) closeMenu(); });
-  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeMenu(); closeOverlay(); } });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { endDrag(false); closeMenu(); closeOverlay(); } });
   window.addEventListener('blur', closeMenu);
 
   vscode.postMessage({ action: 'ready' });
@@ -86,6 +93,7 @@
   // --- cards ---
   function render(cards) {
     closeMenu();
+    cancelPress();
     root.innerHTML = '';
     if (!cards.length) {
       root.appendChild(el('div', 'empty', 'No agent sessions yet. Use “＋ New Agent” above to create one.'));
@@ -196,7 +204,8 @@
     card.appendChild(el('div', 'l3', c.description || ''));
 
     card.addEventListener('click', () => vscode.postMessage({ action: 'open', id: c.id }));
-    card.addEventListener('contextmenu', (e) => { e.preventDefault(); openMenu(e, c); });
+    card.addEventListener('contextmenu', (e) => { e.preventDefault(); cancelPress(); openMenu(e, c); });
+    card.addEventListener('mousedown', onCardMouseDown);
     return card;
   }
 
@@ -218,6 +227,166 @@
     const d = Math.floor(h / 24);
     if (d < 7) return d + 'd ago';
     return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  // --- drag to reorder ---------------------------------------------------
+  // The list never re-sorts itself, so dragging is the only thing that changes
+  // the order. Long-press a card to lift it, drag it between two cards (a rule
+  // marks the slot), release to commit. Dropping outside the list — or on the
+  // card's own slot — snaps it back.
+  const LONG_PRESS_MS = 350;   // hold this long before the card lifts
+  const MOVE_SLOP = 6;         // px of movement that cancels a pending press (i.e. a scroll)
+  const OFF_LIST = 32;         // px beyond the list that counts as "dragged off"
+  const EDGE = 28;             // px from a window edge where the list auto-scrolls
+  const EDGE_MAX = 14;         // px per frame, max auto-scroll speed
+  let press = null;            // pending long-press: { node, x, y, timer }
+  let drag = null;             // active drag: { node, index, slots, line, ... }
+  let scrollRaf = 0;
+  let suppressClick = false;   // a completed drag must not also "open" the card
+
+  document.addEventListener('mousedown', () => { suppressClick = false; }, true);
+  document.addEventListener('mousemove', onDocMouseMove);
+  document.addEventListener('mouseup', () => { cancelPress(); endDrag(true); });
+  // Pointer left the webview entirely — no drop target while it's out there, but
+  // the drag stays alive so sliding back over the narrow panel resumes it.
+  document.addEventListener('mouseleave', () => {
+    cancelPress();
+    if (drag) { drag.target = -1; paintLine(); }
+  });
+  window.addEventListener('blur', () => { cancelPress(); endDrag(false); });
+  // Swallow the click that follows a drag, before it reaches the card handler.
+  window.addEventListener('click', (e) => {
+    if (!suppressClick) return;
+    suppressClick = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+
+  function onCardMouseDown(e) {
+    if (e.button !== 0) return;
+    const node = e.currentTarget;
+    cancelPress();
+    const x = e.clientX, y = e.clientY;
+    press = { node, x, y, timer: setTimeout(() => { press = null; startDrag(node, x, y); }, LONG_PRESS_MS) };
+  }
+  function cancelPress() { if (press) { clearTimeout(press.timer); press = null; } }
+
+  function onDocMouseMove(e) {
+    if (press) {
+      // Moving before the card lifts means the user is scrolling, not dragging.
+      if (Math.abs(e.clientX - press.x) > MOVE_SLOP || Math.abs(e.clientY - press.y) > MOVE_SLOP) cancelPress();
+      return;
+    }
+    if (!drag) return;
+    // Released outside the webview (so we never saw the mouseup) — snap back.
+    if (!(e.buttons & 1)) { endDrag(false); return; }
+    drag.clientX = e.clientX;
+    drag.clientY = e.clientY;
+    updateDrag();
+  }
+
+  function startDrag(node, clientX, clientY) {
+    const nodes = Array.from(root.querySelectorAll('.card'));
+    const index = nodes.indexOf(node);
+    if (index < 0) return;   // list was rebuilt under the press
+    closeMenu();
+    // Slot geometry, measured once in document coordinates: the lifted card is
+    // moved with a transform, so nothing below it reflows and these stay valid
+    // (including while the list auto-scrolls).
+    const slots = nodes.map((n) => {
+      const r = n.getBoundingClientRect();
+      return { node: n, top: r.top + window.scrollY, bottom: r.bottom + window.scrollY, mid: r.top + r.height / 2 + window.scrollY };
+    });
+    const line = el('div', 'drop-line');
+    line.style.display = 'none';
+    root.appendChild(line);
+    drag = {
+      node, index, slots, line, clientX, clientY,
+      rootTop: root.getBoundingClientRect().top + window.scrollY,
+      grabY: clientY + window.scrollY,
+      target: -1,   // insertion slot, or -1 for "snap back"
+    };
+    node.classList.add('dragging');
+    document.body.classList.add('dnd');   // grabbing cursor + no text selection
+    const sel = window.getSelection();
+    if (sel) sel.removeAllRanges();       // drop any selection the press started
+    updateDrag();
+    startAutoScroll();
+  }
+
+  function updateDrag() {
+    const d = drag;
+    if (!d) return;
+    const y = d.clientY + window.scrollY;
+    d.node.style.transform = 'translateY(' + (y - d.grabY) + 'px)';
+    const r = root.getBoundingClientRect();
+    const off = d.clientX < r.left - OFF_LIST || d.clientX > r.right + OFF_LIST ||
+                d.clientY < r.top - OFF_LIST || d.clientY > r.bottom + OFF_LIST;
+    d.target = off ? -1 : dropIndex(y);
+    paintLine();
+  }
+
+  // Which gap the card would land in, by comparing the cursor against each slot's
+  // midpoint. The card's own two neighbouring gaps are no-ops, so they read as -1
+  // ("snap back") and show no rule.
+  function dropIndex(y) {
+    const s = drag.slots;
+    let k = s.length;
+    for (let i = 0; i < s.length; i++) { if (y < s[i].mid) { k = i; break; } }
+    if (k === drag.index || k === drag.index + 1) return -1;
+    return k;
+  }
+
+  function paintLine() {
+    const d = drag;
+    if (d.target < 0) { d.line.style.display = 'none'; return; }
+    const s = d.slots;
+    const y = d.target < s.length ? s[d.target].top : s[s.length - 1].bottom;
+    d.line.style.top = (y - d.rootTop) + 'px';
+    d.line.style.display = 'block';
+  }
+
+  // Dragging against the top/bottom of the panel scrolls the list, so a card can
+  // reach a slot that isn't on screen.
+  function startAutoScroll() {
+    if (scrollRaf) return;
+    const step = () => {
+      scrollRaf = 0;
+      if (!drag) return;
+      const h = window.innerHeight;
+      let dy = 0;
+      if (drag.clientY < EDGE) dy = -Math.min(EDGE_MAX, (EDGE - drag.clientY) / 2 + 3);
+      else if (drag.clientY > h - EDGE) dy = Math.min(EDGE_MAX, (drag.clientY - (h - EDGE)) / 2 + 3);
+      if (dy) { window.scrollBy(0, dy); updateDrag(); }
+      scrollRaf = requestAnimationFrame(step);
+    };
+    scrollRaf = requestAnimationFrame(step);
+  }
+  function stopAutoScroll() { if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = 0; } }
+
+  function endDrag(commit) {
+    const d = drag;
+    if (!d) return;
+    drag = null;
+    stopAutoScroll();
+    d.line.remove();
+    d.node.style.transform = '';
+    d.node.classList.remove('dragging');
+    document.body.classList.remove('dnd');
+    suppressClick = true;
+
+    const moved = commit && d.target >= 0;
+    if (moved) {
+      const nodes = d.slots.map((sl) => sl.node);
+      const [card] = nodes.splice(d.index, 1);
+      nodes.splice(d.target > d.index ? d.target - 1 : d.target, 0, card);
+      for (const n of nodes) root.appendChild(n);   // apply now, so the list doesn't flash back
+      vscode.postMessage({ action: 'reorder', ids: nodes.map((n) => n.dataset.id) });
+    }
+    // State that arrived mid-drag still carries the old order; after a commit the
+    // host posts fresh state of its own, so only replay it when we snapped back.
+    if (pendingCards && !moved) render(pendingCards);
+    pendingCards = null;
   }
 
   // --- context menu ---

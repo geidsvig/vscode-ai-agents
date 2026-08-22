@@ -14,6 +14,7 @@ const gitmod = require('./git.js');
 const STATE_KEY = 'agentsPanel.sessions.v1';
 const PROMO_KEY = 'agentsPanel.promoted.v1'; // { [repoRoot]: branch } currently loaded into that root
 const TERMS_KEY = 'agentsPanel.terminals.v1'; // names of terminals this panel created, for stale cleanup after a restart
+const ORDER_KEY = 'agentsPanel.orderSeeded.v1'; // one-time flag: sessions[] now holds the user's manual order
 
 // --- Agent provider registry -------------------------------------------------
 const providers = {
@@ -333,7 +334,8 @@ function computeCards() {
       canReturn: !!(m.isWorktree && promoted && branch === promoted),
     };
   });
-  cards.sort((a, b) => (b.updated || 0) - (a.updated || 0)); // most recent first
+  // No sorting here: sessions[] IS the order the user arranged by dragging.
+  // Activity only refreshes each card's "updated" label, it never moves the card.
   return cards;
 }
 function computeFolders() {
@@ -360,6 +362,41 @@ function computeState() {
   };
 }
 
+// --- Manual ordering ---------------------------------------------------------
+// The panel list is ordered by hand (long-press + drag), so sessions[] is the
+// order of record. The webview sends the full id list it just arranged; ids we
+// don't recognise are dropped.
+function reorderSessions(ids) {
+  if (!Array.isArray(ids)) return;
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const next = [];
+  for (const id of ids) {
+    const rec = byId.get(id);
+    if (rec && !next.includes(rec)) next.push(rec);
+  }
+  // A record the webview didn't list (created while the drag was in flight) is
+  // put back at its own index rather than shoved to the end.
+  sessions.forEach((rec, i) => { if (!next.includes(rec)) next.splice(Math.min(i, next.length), 0, rec); });
+  if (next.every((rec, i) => rec === sessions[i])) return;     // no-op drop
+  sessions = next;
+  persist();
+}
+
+// One-time migration off the old "most recently updated first" auto-sort: freeze
+// today's visible order into sessions[] so the list doesn't reshuffle on upgrade.
+function seedManualOrder() {
+  if (ctx.globalState.get(ORDER_KEY, false)) return;
+  const stamp = (rec) => {
+    const p = providers[rec.agentId] || {};
+    const t = typeof p.lastActivity === 'function' ? p.lastActivity(rec.cwd, rec.sessionId) : 0;
+    return t || rec.createdAt || 0;
+  };
+  const at = new Map(sessions.map((rec) => [rec.id, stamp(rec)]));
+  sessions.sort((a, b) => (at.get(b.id) || 0) - (at.get(a.id) || 0));
+  ctx.globalState.update(ORDER_KEY, true);
+  persist();
+}
+
 // --- Session creation --------------------------------------------------------
 async function createSession(agentId, dir, desc) {
   const provider = providers[agentId];
@@ -383,7 +420,7 @@ async function createSession(agentId, dir, desc) {
     id: genId(), agentId, cwd, label, sessionId: null, createdAt: Date.now(),
     repoRoot, branch: null, worktreePath, isWorktree,
   };
-  sessions.push(rec);
+  sessions.unshift(rec);   // new work goes to the top of the manually-ordered list
   persist();
   spawn(rec, provider.launchCommand(cwd), true);
   // For a fresh worktree, prime the agent to plan a branch before any edits.
@@ -822,6 +859,7 @@ class SessionsWebview {
       case 'reviewPr': cmdReviewPr(id); break;
       case 'reviewSession': cmdReviewSession(id); break;
       case 'remove': cmdRemove(id); break;
+      case 'reorder': reorderSessions(msg.ids); break;
     }
   }
 }
@@ -937,6 +975,7 @@ async function adoptTerminals(terms, fullSweep) {
 function activate(context) {
   ctx = context;
   sessions = (context.globalState.get(STATE_KEY, []) || []).map((s) => ({ ...s }));
+  seedManualOrder();
 
   view = new SessionsWebview(context.extensionUri);
   context.subscriptions.push(
