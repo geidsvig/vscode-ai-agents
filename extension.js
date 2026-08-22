@@ -403,26 +403,27 @@ function seedManualOrder() {
 // know it may be behind. Everything else is silent — a clean sync is the norm.
 function reportSync(sync) {
   if (!sync) return;
+  const remote = sync.remote || 'origin';
   if (!sync.ok) {
     vscode.window.showWarningMessage(
-      `Couldn't refresh ${sync.base} from origin — the session starts from your local ${sync.base}, ` +
+      `Couldn't refresh ${sync.base} from ${remote} — the session starts from your local ${sync.base}, ` +
       `which may be behind. (${sync.error})`);
     return;
   }
   if (sync.local === 'dirty') {
     vscode.window.showWarningMessage(
-      `${sync.base} is ${sync.behind} commit(s) behind origin and has uncommitted changes in the repo root, ` +
-      `so it was left alone. The new session still starts from origin/${sync.base}.`);
+      `${sync.base} is ${sync.behind} commit(s) behind ${remote} and has uncommitted changes in the repo root, ` +
+      `so it was left alone. The new session still starts from ${sync.ref}.`);
     return;
   }
   if (sync.local === 'diverged') {
     vscode.window.showWarningMessage(
-      `Local ${sync.base} has diverged from origin and couldn't fast-forward. ` +
-      `The new session starts from origin/${sync.base}.`);
+      `Local ${sync.base} has diverged from ${remote} and couldn't fast-forward. ` +
+      `The new session starts from ${sync.ref}.`);
     return;
   }
   if (sync.behind > 0) {
-    vscode.window.showInformationMessage(`Updated ${sync.base} — ${sync.behind} new commit(s) from origin.`);
+    vscode.window.showInformationMessage(`Updated ${sync.base} — ${sync.behind} new commit(s) from ${remote}.`);
   }
 }
 
