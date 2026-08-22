@@ -38,6 +38,11 @@ body {
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
   color: var(--vscode-foreground);
+  /* Paint the panel background from the theme. Without this the body is
+     transparent and falls back to a dark default, so in a light theme the
+     non-selected (background-less) rows sit on a dark backdrop with dark text.
+     Dark themes look identical to before. */
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
 }
 button.new {
   display: flex; align-items: center; gap: 8px;
