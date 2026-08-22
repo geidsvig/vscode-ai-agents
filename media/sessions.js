@@ -79,7 +79,7 @@
         if (grid[y][x] === 'X') rects += '<rect x="' + x + '" y="' + y + '" width="1" height="1"/>';
       }
     }
-    // fill=currentColor so the coral follows --ap-agent (.lag .mascot) per theme.
+    // fill=currentColor so the mascot follows the muted metadata color (.lag .mascot).
     return '<svg viewBox="0 0 ' + w + ' ' + h + '" fill="currentColor" shape-rendering="crispEdges">' + rects + '</svg>';
   })(MASCOT_GRID);
 
@@ -88,6 +88,42 @@
     if (cls) n.className = cls;
     if (text != null) n.textContent = text;
     return n;
+  }
+
+  // --- session identity color ---
+  // A small fixed palette the user picks from (New-Agent modal + right-click menu).
+  // The chosen color paints ONLY the left rail and the context-bar fill — never
+  // any text/icon. Azure is the default and matches the panel's existing blue.
+  const SESSION_COLORS = [
+    { name: 'Azure',  hex: '#3A9FE8' },   // default / VS Code-ish
+    { name: 'Violet', hex: '#8B5CF0' },   // distinct without being loud
+    { name: 'Amber',  hex: '#E8AD2E' },   // warm project identifier
+    { name: 'Teal',   hex: '#35C2C1' },   // cool alternative
+    { name: 'Green',  hex: '#61C95D' },   // familiar but controlled
+    { name: 'Rose',   hex: '#D96870' },   // red-family without looking like an error
+    { name: 'Slate',  hex: '#71808D' },   // neutral / low-priority
+  ];
+  const DEFAULT_SESSION_COLOR = SESSION_COLORS[0].hex;
+
+  // A row of round color chips. `selected` (hex) gets the ring; clicking a chip
+  // moves the ring and calls onPick(hex).
+  function swatchRow(selected, onPick) {
+    const row = el('div', 'swatches');
+    const sel = (selected || '').toLowerCase();
+    for (const col of SESSION_COLORS) {
+      const b = el('button', 'swatch' + (col.hex.toLowerCase() === sel ? ' sel' : ''));
+      b.type = 'button';
+      b.title = col.name;
+      b.style.setProperty('--sw', col.hex);
+      b.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        for (const s of row.querySelectorAll('.swatch.sel')) s.classList.remove('sel');
+        b.classList.add('sel');
+        onPick(col.hex);
+      });
+      row.appendChild(b);
+    }
+    return row;
   }
 
   // --- cards ---
@@ -128,6 +164,9 @@
       (c.roll === 'work' ? ' working' : c.roll === 'ask' ? ' asking' : c.roll === 'ready' ? ' ready' : '') +
       (c.missing ? ' missing' : ''));
     card.dataset.id = c.id;
+    // Identity color feeds --session-color; the rail + context fill read it via CSS.
+    card.style.setProperty('--session-color', c.color || DEFAULT_SESSION_COLOR);
+    card.appendChild(el('div', 'color-rail'));
 
     // Row 1: project ............................. [last updated]
     const l1 = el('div', 'l1');
@@ -153,7 +192,7 @@
     // Branch row: [checkout icon] branch .......... [merged] [PR badge]
     const l2 = el('div', 'l2');
     if (c.checkout) {
-      const ic = el('span', 'ctype ctype-' + c.checkout);
+      const ic = el('span', 'ctype ctype-' + c.checkout + (c.isMain ? ' is-main' : ''));
       ic.innerHTML = c.checkout === 'main' ? ICON_MAIN : ICON_WORKTREE;
       ic.title = c.checkout === 'main' ? "On the repo's main checkout" : 'Running in a git worktree';
       l2.appendChild(ic);
@@ -396,6 +435,9 @@
     const out = [];
     out.push({ label: 'Review session', action: 'reviewSession', icon: MENU_ICON.review });
     out.push({ label: 'Rename', do: () => openRenameForm(c), icon: MENU_ICON.rename });
+    out.push({ sep: true });
+    out.push({ colors: true });   // Session-color swatch row
+    out.push({ sep: true });
     if (c.canReveal) out.push({ label: 'Reveal session file', action: 'reveal', icon: MENU_ICON.file });
     if (c.canReturn) out.push({ label: 'Return root to main', action: 'returnMain', icon: MENU_ICON.star });
     else out.push({ label: 'Set as main (test in root)', action: 'setMain', icon: MENU_ICON.star });
@@ -411,6 +453,14 @@
     const m = el('div', 'menu');
     for (const it of items(c)) {
       if (it.sep) { m.appendChild(el('div', 'sepline')); continue; }
+      if (it.colors) {
+        m.appendChild(el('div', 'mi-head', 'Session color'));
+        m.appendChild(swatchRow(c.color, (hex) => {
+          closeMenu();
+          vscode.postMessage({ action: 'setColor', id: c.id, color: hex });
+        }));
+        continue;
+      }
       const mi = el('div', 'mi' + (it.danger ? ' danger' : ''));
       const ic = el('span', 'mi-ic');
       if (it.icon) ic.innerHTML = it.icon;
@@ -492,9 +542,13 @@
     desc.type = 'text';
     desc.placeholder = 'e.g. fix login redirect';
 
+    let chosenColor = DEFAULT_SESSION_COLOR;
+    const colorRow = swatchRow(chosenColor, (hex) => { chosenColor = hex; });
+
     body.appendChild(field('AI agent', agentSel));
     body.appendChild(field('Project directory', dirSel));
     body.appendChild(field('Short description (used for the worktree/branch name)', desc));
+    body.appendChild(field('Session color', colorRow));
 
     showModal('New Agent', body, 'Create', () => {
       const agentId = agentSel.value;
@@ -503,7 +557,7 @@
       if (!agentId) { agentSel.focus(); return false; }
       if (!cwd) { dirSel.focus(); return false; }
       if (!d) { desc.focus(); return false; }
-      vscode.postMessage({ action: 'create', agentId, cwd, desc: d });
+      vscode.postMessage({ action: 'create', agentId, cwd, desc: d, color: chosenColor });
     });
     setTimeout(() => desc.focus(), 30);
   }

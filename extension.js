@@ -15,6 +15,7 @@ const STATE_KEY = 'agentsPanel.sessions.v1';
 const PROMO_KEY = 'agentsPanel.promoted.v1'; // { [repoRoot]: branch } currently loaded into that root
 const TERMS_KEY = 'agentsPanel.terminals.v1'; // names of terminals this panel created, for stale cleanup after a restart
 const ORDER_KEY = 'agentsPanel.orderSeeded.v1'; // one-time flag: sessions[] now holds the user's manual order
+const DEFAULT_SESSION_COLOR = '#3A9FE8';     // Azure — the default identity color (matches the current blue)
 
 // --- Agent provider registry -------------------------------------------------
 const providers = {
@@ -72,6 +73,8 @@ function persist() {
     repoRoot: s.repoRoot || null, branch: s.branch || null,
     worktreePath: s.worktreePath || null, isWorktree: !!s.isWorktree,
     mergedHandledPr: s.mergedHandledPr || null, termName: s.termName || null,
+    color: s.color || null,   // user-picked session identity color (hex); null = default
+
   }));
   ctx.globalState.update(STATE_KEY, data);
   refresh();
@@ -140,6 +143,22 @@ function bindSession(rec) {
   }, 1000);
 }
 const isActive = (rec) => live.has(rec.id);
+// Follow a `/clear` (or any fresh session started in the same terminal). Claude
+// mints a NEW session id/file on /clear, leaving the old file frozen mid-turn —
+// so a record pinned to it shows stale activity ("…" forever) and the wrong id.
+// For a LIVE session whose bound file has been superseded by a strictly newer
+// one in the same cwd, re-bind to the newest so activity/context/id track the
+// conversation that's actually running. Initial binding stays bindSession's job
+// (guarded by rec.sessionId) so we never race it onto a pre-existing session.
+function maybeRebind(rec) {
+  if (!rec.sessionId) return;
+  const p = providers[rec.agentId];
+  if (!p || typeof p.listSessions !== 'function') return;
+  const list = p.listSessions(rec.cwd);            // newest first
+  if (!list.length || list[0].id === rec.sessionId) return;
+  const bound = list.find((s) => s.id === rec.sessionId);
+  if (!bound || list[0].mtimeMs > bound.mtimeMs) { rec.sessionId = list[0].id; persist(); }
+}
 // A session's current branch: the live one (which follows in-terminal checkouts)
 // falling back to whatever was persisted. Detached worktrees have none until the
 // agent creates one during planning.
@@ -237,6 +256,7 @@ function pollActivity() {
   const working = [], asking = [], ready = [];
   for (const rec of sessions) {
     if (!live.has(rec.id)) continue;
+    maybeRebind(rec);   // follow a /clear before reading activity, so the roll tracks the live session
     let kind = rollKind(rec);
     if (kind === 'work') workingUntil.set(rec.id, now + WORK_GRACE_MS);
     else if ((workingUntil.get(rec.id) || 0) > now) kind = 'work';   // let the roll trail briefly
@@ -323,6 +343,8 @@ function computeCards() {
       prBadge: pr && !merged ? { number: pr.number, review: pr.review || 'open' } : null,
       merged,
       checkout,
+      isMain,                                   // drives the branch-icon color (accent when main, muted otherwise)
+      color: rec.color || DEFAULT_SESSION_COLOR, // identity color: rail + progress fill only
       context,
       active,
       roll: rollKind(rec),   // 'work' | 'ask' | 'ready' | null — initial roll state (postActivity keeps it fresh)
@@ -427,7 +449,7 @@ function reportSync(sync) {
   }
 }
 
-async function createSession(agentId, dir, desc) {
+async function createSession(agentId, dir, desc, color) {
   const provider = providers[agentId];
   if (!provider || !provider.available) { vscode.window.showErrorMessage('Unknown or unavailable agent.'); return; }
   if (!dir) { vscode.window.showErrorMessage('No directory selected.'); return; }
@@ -457,6 +479,7 @@ async function createSession(agentId, dir, desc) {
   const rec = {
     id: genId(), agentId, cwd, label, sessionId: null, createdAt: Date.now(),
     repoRoot, branch: null, worktreePath, isWorktree,
+    color: color || null,
   };
   sessions.unshift(rec);   // new work goes to the top of the manually-ordered list
   persist();
@@ -536,6 +559,14 @@ async function cmdRename(node) {
 function renameTo(id, value) {
   const rec = findById(id);
   if (rec && value && value.trim()) { rec.label = value.trim(); persist(); }
+}
+// Set (or clear) a session's identity color. Only affects the left rail + the
+// context-bar fill; everything else is theme/semantic-colored (see computeCards).
+function setColor(id, color) {
+  const rec = findById(id);
+  if (!rec) return;
+  rec.color = color && /^#[0-9a-fA-F]{6}$/.test(color) ? color : null;
+  persist();
 }
 async function cmdRevealSession(node) {
   const rec = findById(node);
@@ -887,8 +918,9 @@ class SessionsWebview {
         if (this.view) this.view.webview.postMessage({ type: 'browsed', path: uris && uris[0] ? uris[0].fsPath : null });
         break;
       }
-      case 'create': createSession(msg.agentId, msg.cwd, msg.desc); break;
+      case 'create': createSession(msg.agentId, msg.cwd, msg.desc, msg.color); break;
       case 'rename': renameTo(id, msg.value); break;
+      case 'setColor': setColor(id, msg.color); break;
       case 'open': cmdOpenOrResume(id); break;
       case 'reveal': cmdRevealSession(id); break;
       case 'setMain': cmdSetAsMain(id); break;
