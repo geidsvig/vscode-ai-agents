@@ -1,0 +1,12 @@
+.git
+.vscode/**
+.github/**
+.claude/**
+.agents/**
+test/**
+**/*.map
+.gitignore
+.vscodeignore
+CONTRIBUTING.md
+**/.DS_Store
+**/*.vsix
