@@ -101,6 +101,12 @@ npm test    # no dependencies, no VSCode needed
   so it is macOS/Linux only. On Windows the panel falls back to matching
   terminals by name and never closes one.
 
+## Contributing
+
+This is a personal tool published for reading and forking, not a community
+project — pull requests and issues aren't accepted. Fork it and make it yours;
+the MIT license has you covered. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 MIT
