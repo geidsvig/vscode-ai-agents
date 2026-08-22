@@ -73,11 +73,13 @@ To package a `.vsix` instead: `npx @vscode/vsce package` then
 ## Tests
 
 ```bash
-npm test    # node test/restore.test.js — no dependencies, no VSCode needed
+npm test    # no dependencies, no VSCode needed
 ```
 
-Covers restart/reload restore: which terminals are adopted, which leftovers are
-closed, and how a session whose directory vanished behaves.
+- `test/restore.test.js` — restart/reload restore: which terminals are adopted,
+  which leftovers are closed, and how a session whose directory vanished behaves.
+- `test/activity.test.js` — how a session's transcript maps to the card's roll
+  (working / waiting / idle), including cancelled turns.
 
 ## Settings
 
