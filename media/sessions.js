@@ -64,7 +64,7 @@
     '...X.X....X.X...',   // four legs
     '...X.X....X.X...',
   ];
-  const MASCOT = (function (grid, color) {
+  const MASCOT = (function (grid) {
     const w = grid[0].length, h = grid.length;
     let rects = '';
     for (let y = 0; y < h; y++) {
@@ -72,8 +72,9 @@
         if (grid[y][x] === 'X') rects += '<rect x="' + x + '" y="' + y + '" width="1" height="1"/>';
       }
     }
-    return '<svg viewBox="0 0 ' + w + ' ' + h + '" fill="' + color + '" shape-rendering="crispEdges">' + rects + '</svg>';
-  })(MASCOT_GRID, '#b86f55');   // desaturated coral — agent identity, ~branch-icon weight
+    // fill=currentColor so the coral follows --ap-agent (.lag .mascot) per theme.
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" fill="currentColor" shape-rendering="crispEdges">' + rects + '</svg>';
+  })(MASCOT_GRID);
 
   function el(tag, cls, text) {
     const n = document.createElement(tag);
