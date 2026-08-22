@@ -5,18 +5,25 @@
 const cp = require('child_process');
 const path = require('path');
 
-function run(cmd, args, cwd) {
+function run(cmd, args, cwd, opts) {
+  const o = opts || {};
+  // Network calls run with no terminal, so a credential prompt would hang the
+  // panel forever. Make git fail fast instead, and cap it with a timeout.
+  const env = o.noPrompt
+    ? { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', SSH_ASKPASS: 'echo' }
+    : process.env;
   return new Promise((resolve) => {
-    cp.execFile(cmd, args, { cwd, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    cp.execFile(cmd, args, { cwd, env, timeout: o.timeout || 0, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
       resolve({
         code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
         stdout: (stdout || '').trim(),
         stderr: (stderr || '').trim(),
+        timedOut: !!(err && err.killed),
       });
     });
   });
 }
-const git = (args, cwd) => run('git', args, cwd);
+const git = (args, cwd, opts) => run('git', args, cwd, opts);
 const gh = (args, cwd) => run('gh', args, cwd);
 
 async function isRepo(cwd) {
@@ -33,15 +40,33 @@ async function mainRoot(cwd) {
 }
 
 async function hasRemote(cwd) {
-  const r = await git(['remote'], cwd);
-  return r.code === 0 && r.stdout.length > 0;
+  return (await remoteName(cwd)) !== null;
 }
 
-async function defaultBranch(cwd) {
-  let r = await git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd);
-  if (r.code === 0 && r.stdout) return r.stdout.replace(/^origin\//, '');
-  for (const b of ['main', 'master']) {
-    r = await git(['show-ref', '--verify', '--quiet', `refs/heads/${b}`], cwd);
+// Which remote to talk to. `origin` by convention, but a repo may name it
+// anything (`upstream` on a fork you push to directly), so fall back to the
+// first one rather than assuming.
+async function remoteName(cwd) {
+  const r = await git(['remote'], cwd);
+  if (r.code !== 0 || !r.stdout) return null;
+  const list = r.stdout.split('\n').map((x) => x.trim()).filter(Boolean);
+  return list.includes('origin') ? 'origin' : (list[0] || null);
+}
+
+// The repo's trunk — `main`, `master`, `develop`, `trunk`, whatever this repo
+// calls it. The remote's own HEAD is the authority; the local-branch scan below
+// is only a guess for when that ref is missing (see syncDefaultBranch, which
+// repairs it). Pass `remote` to skip re-resolving it.
+async function defaultBranch(cwd, remote) {
+  const rem = remote === undefined ? await remoteName(cwd) : remote;
+  if (rem) {
+    const r = await git(['symbolic-ref', '--short', `refs/remotes/${rem}/HEAD`], cwd);
+    if (r.code === 0 && r.stdout) {
+      return r.stdout.startsWith(rem + '/') ? r.stdout.slice(rem.length + 1) : r.stdout;
+    }
+  }
+  for (const b of ['main', 'master', 'trunk', 'develop']) {
+    const r = await git(['show-ref', '--verify', '--quiet', `refs/heads/${b}`], cwd);
     if (r.code === 0) return b;
   }
   return 'main';
@@ -78,12 +103,67 @@ async function branchExists(root, branch) {
 const slugify = (s) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'session';
 
-// Create <root>/.agents/<repo>-session-<N> as a DETACHED worktree at the default
-// branch's tip. Detached because a worktree can't share `main` with the root, and
-// the branch is chosen later (in conversation). N starts at `startN` and bumps
-// past any existing dir. Returns { ok, wtPath, name, error }.
-async function addWorktree(root, startN) {
-  const base = await defaultBranch(root);
+// Bring the default branch up to date with the remote before anything is cut
+// from it, so a new session doesn't start life behind origin. Best-effort: a
+// missing remote, no network, or a dirty/diverged local branch all degrade to
+// "use what we have" rather than blocking session creation.
+// Returns { ok, base, ref, behind, local, error } where `ref` is what callers
+// should branch from and `local` says what happened to the local branch:
+//   'updated' | 'current' | 'dirty' | 'diverged' | 'checked-out' | 'no-remote'
+const FETCH_TIMEOUT_MS = 20000;
+async function syncDefaultBranch(root) {
+  const remote = await remoteName(root);
+  if (!remote) {
+    const base = await defaultBranch(root, null);
+    return { ok: true, remote: null, base, ref: base, behind: 0, local: 'no-remote' };
+  }
+  // Ask the remote which branch its HEAD points at and cache the answer in
+  // refs/remotes/<remote>/HEAD. Repos wired up with `git remote add` (rather
+  // than cloned) never have that ref, and without it defaultBranch is reduced
+  // to guessing `main` at a repo whose trunk is develop/trunk/anything else.
+  // Best-effort: offline just leaves the existing ref in place.
+  await git(['remote', 'set-head', remote, '-a'], root, { timeout: FETCH_TIMEOUT_MS, noPrompt: true });
+  const base = await defaultBranch(root, remote);
+
+  const f = await git(['fetch', '--quiet', remote, base], root, { timeout: FETCH_TIMEOUT_MS, noPrompt: true });
+  if (f.code !== 0) {
+    const error = f.timedOut ? `fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s` : (f.stderr || 'git fetch failed');
+    return { ok: false, remote, base, ref: base, behind: 0, local: 'no-remote', error };
+  }
+  // The remote may not carry this branch at all (never pushed) — nothing to sync to.
+  const ref = `${remote}/${base}`;
+  const has = await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], root);
+  if (has.code !== 0) return { ok: true, remote, base, ref: base, behind: 0, local: 'no-remote' };
+
+  const behind = (await commitsAhead(root, base, ref)) || 0;
+  return { ok: true, remote, base, ref, behind, local: await fastForwardLocal(root, remote, base, ref, behind) };
+}
+
+// Move the local default branch up to the remote tip. Two cases: it's checked
+// out in the repo root (fast-forward the working tree), or it isn't (update the
+// ref directly via a self-refspec fetch, which needs no checkout).
+async function fastForwardLocal(root, remote, base, ref, behind) {
+  if (behind === 0) return 'current';
+  const cur = await info(root);
+  if (cur.isRepo && !cur.detached && cur.branch === base) {
+    if (cur.dirty) return 'dirty';                       // never touch a dirty working tree
+    const m = await git(['merge', '--ff-only', ref], root);
+    return m.code === 0 ? 'updated' : 'diverged';
+  }
+  // Fails if `base` is checked out in some other worktree; harmless either way,
+  // since the new worktree is cut from `ref`, not from the local branch.
+  const r = await git(['fetch', remote, `${base}:${base}`], root, { timeout: FETCH_TIMEOUT_MS, noPrompt: true });
+  return r.code === 0 ? 'updated' : 'checked-out';
+}
+
+// Create <root>/.agents/<repo>-session-<N> as a DETACHED worktree at `baseRef`
+// (default: the local default branch — callers should pass the remote-tracking
+// ref from syncDefaultBranch so the session starts from an up-to-date base).
+// Detached because a worktree can't share `main` with the root, and the branch
+// is chosen later (in conversation). N starts at `startN` and bumps past any
+// existing dir. Returns { ok, wtPath, name, error }.
+async function addWorktree(root, startN, baseRef) {
+  const base = baseRef || (await defaultBranch(root));
   const repo = path.basename(root);
   const fs = require('fs');
   let n = Math.max(1, startN || 1);
@@ -141,7 +221,8 @@ async function deleteBranch(root, branch) {
 }
 
 async function pushBranch(cwd, branch) {
-  const r = await git(['push', '-u', 'origin', branch], cwd);
+  const remote = (await remoteName(cwd)) || 'origin';
+  const r = await git(['push', '-u', remote, branch], cwd);
   return r.code === 0 ? { ok: true } : { ok: false, error: r.stderr };
 }
 
@@ -217,7 +298,7 @@ async function prComments(cwd, branch) {
 }
 
 module.exports = {
-  isRepo, info, mainRoot, hasRemote, defaultBranch, slugify,
-  addWorktree, promote, returnToMain, isPromotedAt, removeWorktree, pruneWorktrees, deleteBranch,
+  isRepo, info, mainRoot, hasRemote, remoteName, defaultBranch, slugify,
+  syncDefaultBranch, addWorktree, promote, returnToMain, isPromotedAt, removeWorktree, pruneWorktrees, deleteBranch,
   pushBranch, commitsAhead, prView, prCreate, prComments,
 };

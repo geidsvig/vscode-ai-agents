@@ -14,7 +14,15 @@ links (agent + directory + session id) needed to bring a session back.
 - **Agents panel** listing your agent sessions as **active** (a live terminal
   exists — click to focus) or **inactive** (click to resume).
 - **New Agent** flow: pick an agent, pick a project directory → a terminal opens
-  in that directory, launches the agent, and is tracked automatically.
+  in that directory, launches the agent, and is tracked automatically. In a git
+  repo the session gets its own worktree, cut from a **freshly fetched** trunk —
+  the default branch is pulled up to the remote first, so a new session never
+  starts behind. The trunk is whatever the remote's HEAD says it is (`main`,
+  `master`, `develop`, …) and the remote is `origin` or, failing that, whatever
+  the repo actually calls it. A dirty or diverged local trunk is left untouched
+  (the worktree still starts from the remote tip), and if the fetch fails the
+  session is created from the local branch with a warning rather than being
+  blocked.
 - **Lazy restore:** after a restart, sessions reappear as *inactive*. Nothing is
   launched until you click one — light on resources, no surprise token spend. A
   session only counts as *active* while its agent process is genuinely running,
