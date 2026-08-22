@@ -5,13 +5,32 @@
        blue  = plugin / navigation / selection
        coral = agent / model identity
      The working "…" roll is theme white (activity ping, not a status color).
-     Dark-tuned values; tweak here to retheme the whole panel. */
+     Values below are the dark-theme defaults; the body.vscode-* blocks retune
+     them per theme (VS Code stamps vscode-light / vscode-dark / vscode-high-
+     contrast[-light] on <body>). Tweak per theme there. */
   --ap-accent: #3a8fc2;         /* context bar, branch, primary interactions */
-  --ap-accent-hover: #47a4d8;
   --ap-select-border: #31566b;  /* selected-card border */
   --ap-select-bg: #17232a;      /* selected-card tint */
   --ap-agent: #b86f55;          /* Claw'd mascot / model glyph */
 }
+/* Light themes: the near-black selected tint would be a dark blob on a light
+   row, so swap to a faint blue wash + a soft steel border, and deepen the
+   accent/coral a touch so the thin bar, branch icon, and mascot hold contrast
+   on white. */
+body.vscode-light {
+  --ap-accent: #2f7bab;
+  --ap-select-border: #7ea9c9;
+  --ap-select-bg: #e8f1f8;
+  --ap-agent: #ab5f45;
+}
+/* High-contrast (dark or light): no tint — accessibility themes carry meaning
+   in borders, so lean on VS Code's own contrast border and drop the fill. */
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --ap-select-bg: transparent;
+  --ap-select-border: var(--vscode-contrastActiveBorder, var(--vscode-focusBorder, currentColor));
+}
+body.vscode-high-contrast-light { --ap-accent: #2f7bab; --ap-agent: #ab5f45; }
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -67,8 +86,8 @@ button.new .plus { font-size: 15px; line-height: 1; }
 
 /* agent row: [mascot / provider] model  <session-id> */
 .lag { display: flex; align-items: center; gap: 6px; margin-top: 2px; min-width: 0; }
-.lag .mascot { display: inline-flex; align-items: center; flex: none; }
-.lag .mascot svg { height: 13px; width: auto; display: block; }
+.lag .mascot { display: inline-flex; align-items: center; flex: none; color: var(--ap-agent); }
+.lag .mascot svg { height: 13px; width: auto; display: block; }   /* fill=currentColor -> follows --ap-agent per theme */
 .lag .agent { color: var(--vscode-descriptionForeground); white-space: nowrap; }
 .lag .sid {
   margin-left: auto; flex: none;
