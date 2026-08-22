@@ -20,6 +20,9 @@
     "onStartupFinished"
   ],
   "main": "./extension.js",
+  "scripts": {
+    "test": "node test/restore.test.js && node test/activity.test.js"
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [

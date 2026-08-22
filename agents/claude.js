@@ -86,6 +86,20 @@ const infoCache = new Map(); // filePath -> { mtimeMs, model, contextTokens, sta
 // of these means "waiting for you", not "working" (unlike Bash/Edit/etc., which a
 // pending call can't be told apart from mid-execution and so get a time-based guess).
 const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
+// Cancelling a turn (Esc) appends a user message carrying only Claude Code's
+// interruption marker — "[Request interrupted by user]", or "…for tool use]"
+// when a tool call was in flight. Nothing is owed in reply, so unlike an ordinary
+// trailing user message it ends the turn. Some versions also tag the entry with
+// interruptedMessageId; either tell is enough.
+function isInterruption(o) {
+  if (o.interruptedMessageId) return true;
+  const c = o.message && o.message.content;
+  const text = typeof c === 'string' ? c
+    : Array.isArray(c) ? c.map((b) => (b && b.type === 'text' ? b.text || '' : '')).join('')
+    : '';
+  return /^\s*\[Request interrupted by user/.test(text);
+}
+
 function readSessionInfo(cwd, sessionId) {
   // Prefer the record's bound session; fall back to the newest session in the cwd
   // so an unbound record still shows a model/context gauge (as lastActivity does).
@@ -133,6 +147,8 @@ function readSessionInfo(cwd, sessionId) {
     //             transcript; the extension resolves it with a staleness timer)
     //   working - last message is a user prompt / tool_result, or assistant
     //             thinking/text mid-turn -> the model owes a reply
+    // A cancelled turn (Esc) is idle: the trailing user message is Claude's own
+    // interruption marker, which asks for nothing (see isInterruption).
     // A trailing user message is only "working" if a real turn precedes it. After
     // /compact, Claude appends the summary as user messages right after a
     // compact_boundary with no reply owed — so a user run preceded by that
@@ -149,7 +165,12 @@ function readSessionInfo(cwd, sessionId) {
       if (o.type === 'system' && o.subtype === 'compact_boundary') { status = 'idle'; break; }  // trailing user run was the /compact summary
       if (o.type === 'system' && o.subtype === 'turn_duration') { status = trailingUser ? 'working' : 'idle'; break; }
       if (o.type !== 'user' && o.type !== 'assistant') continue;
-      if (o.type === 'user') { trailingUser = true; status = 'working'; continue; }  // tentative — look at what precedes it
+      if (o.type === 'user') {
+        // A cancelled turn leaves the agent idle at the prompt. Only when it is
+        // the last word, though: a real prompt after it means work resumed.
+        if (!trailingUser && isInterruption(o)) { status = 'idle'; break; }
+        trailingUser = true; status = 'working'; continue;   // tentative — look at what precedes it
+      }
       const m = o.message || {};
       if (trailingUser) { status = 'working'; break; }   // user message(s) followed this assistant turn -> real prompt/tool_result
       const sr = m.stop_reason;
@@ -198,6 +219,12 @@ module.exports = {
   label: 'Claude',
   icon: 'sparkle',
   available: true,
+
+  // Matches the CLI process under a terminal's shell, so the extension can tell
+  // a terminal whose agent is still running from one VS Code merely revived as a
+  // bare shell after a restart. `claude` normally, but a wrapper can leave the
+  // command name as node/npx running the CLI entry point.
+  processMatch: /(^|\/)claude(\s|$)|claude[^/]*\/cli\.js/,
 
   launchCommand() {
     return 'claude';

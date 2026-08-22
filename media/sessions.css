@@ -123,6 +123,10 @@ button.new .plus { font-size: 15px; line-height: 1; }
 .l2 .branch.muted { opacity: 0.6; font-style: italic; }
 .l2 .branch .dirty { color: var(--vscode-charts-yellow); }
 .l2 .status { color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; }
+/* the session's working directory is gone (worktree removed outside the panel):
+   the card stays readable but reads as unusable until the record is removed */
+.l2 .status-missing { color: var(--vscode-errorForeground, var(--vscode-charts-red)); }
+.card.missing { opacity: 0.5; }
 /* right-aligned PR badge, colored by review state */
 .l2 .pr-badge { margin-left: auto; padding-left: 8px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .l2 .pr-badge.pr-approved { color: var(--vscode-charts-green); }

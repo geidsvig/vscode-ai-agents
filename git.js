@@ -127,6 +127,14 @@ async function removeWorktree(root, wtPath, force) {
   return r.code === 0 ? { ok: true } : { ok: false, error: r.stderr };
 }
 
+// Clear git's registry of worktrees whose directory has been deleted. Used when
+// removing a session whose worktree is already gone — `worktree remove` refuses
+// on a missing path, leaving a stale admin entry behind.
+async function pruneWorktrees(root) {
+  const r = await git(['worktree', 'prune'], root);
+  return r.code === 0 ? { ok: true } : { ok: false, error: r.stderr };
+}
+
 async function deleteBranch(root, branch) {
   const r = await git(['branch', '-D', branch], root);
   return r.code === 0 ? { ok: true } : { ok: false, error: r.stderr };
@@ -210,6 +218,6 @@ async function prComments(cwd, branch) {
 
 module.exports = {
   isRepo, info, mainRoot, hasRemote, defaultBranch, slugify,
-  addWorktree, promote, returnToMain, isPromotedAt, removeWorktree, deleteBranch,
+  addWorktree, promote, returnToMain, isPromotedAt, removeWorktree, pruneWorktrees, deleteBranch,
   pushBranch, commitsAhead, prView, prCreate, prComments,
 };
