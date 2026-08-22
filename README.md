@@ -16,7 +16,16 @@ links (agent + directory + session id) needed to bring a session back.
 - **New Agent** flow: pick an agent, pick a project directory → a terminal opens
   in that directory, launches the agent, and is tracked automatically.
 - **Lazy restore:** after a restart, sessions reappear as *inactive*. Nothing is
-  launched until you click one — light on resources, no surprise token spend.
+  launched until you click one — light on resources, no surprise token spend. A
+  session only counts as *active* while its agent process is genuinely running,
+  so a terminal VSCode revived as an empty shell doesn't masquerade as a live
+  session; those leftovers are closed on startup instead of piling up in the
+  terminal list. Terminals with anything else still running in them are left
+  alone.
+- **Missing directories:** if a session's worktree is deleted outside the panel,
+  the card says *folder missing* and opening it offers to drop the record —
+  rather than launching a terminal that can only fail ("Starting directory (cwd)
+  … does not exist").
 - **Exact resume:** for Claude it binds the on-disk session id, so resuming
   returns to the right conversation even with several sessions in one directory.
 - Sessions are saved automatically (no manual save). State lives in VSCode
@@ -36,6 +45,9 @@ module.exports = {
   id: 'my-agent', label: 'My Agent', icon: 'sparkle', available: true,
   launchCommand(cwd) { return 'my-agent'; },
   resumeCommand(cwd, sessionId) { return `my-agent --resume ${sessionId}`; },
+  // optional: matched against the command lines under a terminal's shell to tell
+  // a still-running session from a shell VSCode revived after a restart.
+  processMatch: /(^|\/)my-agent(\s|$)/,
   // optional, for exact resume binding + reveal:
   // listSessions(cwd), newSessionSince(cwd, sinceMs), sessionFile(cwd, sessionId),
 };
@@ -58,6 +70,15 @@ the **Sessions** view.
 To package a `.vsix` instead: `npx @vscode/vsce package` then
 `code --install-extension agents-panel-*.vsix`.
 
+## Tests
+
+```bash
+npm test    # node test/restore.test.js — no dependencies, no VSCode needed
+```
+
+Covers restart/reload restore: which terminals are adopted, which leftovers are
+closed, and how a session whose directory vanished behaves.
+
 ## Settings
 
 - `agentsPanel.autoRunResume` (default `true`) — execute the resume command on
@@ -70,6 +91,9 @@ To package a `.vsix` instead: `npx @vscode/vsce package` then
   that reloads the conversation, which is the point.
 - Tracked sessions are per-machine (they reference that machine's local agent
   files) and do not sync across computers.
+- Telling a live session from a revived shell reads the process table via `ps`,
+  so it is macOS/Linux only. On Windows the panel falls back to matching
+  terminals by name and never closes one.
 
 ## License
 

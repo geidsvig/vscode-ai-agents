@@ -116,7 +116,8 @@
   function cardEl(c) {
     const kind = c.status ? c.status.kind : 'none';
     const card = el('div', 'card ' + (c.active ? 'active' : 'inactive') + (c.selected ? ' selected' : '') +
-      (c.roll === 'work' ? ' working' : c.roll === 'ask' ? ' asking' : c.roll === 'ready' ? ' ready' : ''));
+      (c.roll === 'work' ? ' working' : c.roll === 'ask' ? ' asking' : c.roll === 'ready' ? ' ready' : '') +
+      (c.missing ? ' missing' : ''));
     card.dataset.id = c.id;
 
     // Row 1: project ............................. [last updated]
@@ -157,7 +158,9 @@
       l2.appendChild(el('span', 'branch muted', 'no branch yet'));
     }
     if (c.status && c.status.text && kind !== 'main' && kind !== 'worktree') {
-      l2.appendChild(el('span', 'status', c.status.text));
+      const st = el('span', 'status status-' + kind, c.status.text);
+      if (kind === 'missing') st.title = 'The working directory for this session no longer exists — open it to remove the record.';
+      l2.appendChild(st);
     }
     if (c.prBadge) {
       l2.appendChild(el('span', 'pr-badge pr-' + (c.prBadge.review || 'open'), '[PR #' + c.prBadge.number + ']'));

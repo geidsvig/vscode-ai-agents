@@ -199,6 +199,12 @@ module.exports = {
   icon: 'sparkle',
   available: true,
 
+  // Matches the CLI process under a terminal's shell, so the extension can tell
+  // a terminal whose agent is still running from one VS Code merely revived as a
+  // bare shell after a restart. `claude` normally, but a wrapper can leave the
+  // command name as node/npx running the CLI entry point.
+  processMatch: /(^|\/)claude(\s|$)|claude[^/]*\/cli\.js/,
+
   launchCommand() {
     return 'claude';
   },

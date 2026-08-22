@@ -8,10 +8,12 @@ const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const cp = require('child_process');
 const gitmod = require('./git.js');
 
 const STATE_KEY = 'agentsPanel.sessions.v1';
 const PROMO_KEY = 'agentsPanel.promoted.v1'; // { [repoRoot]: branch } currently loaded into that root
+const TERMS_KEY = 'agentsPanel.terminals.v1'; // names of terminals this panel created, for stale cleanup after a restart
 
 // --- Agent provider registry -------------------------------------------------
 const providers = {
@@ -24,6 +26,7 @@ const providers = {
 let ctx;
 let sessions = [];                 // persisted session records
 const live = new Map();            // recordId -> vscode.Terminal running the agent
+const ours = new Set();            // terminals created in THIS window (never candidates for revival cleanup)
 const meta = new Map();            // recordId -> live git snapshot
 const prCache = new Map();         // branch -> { number, state, merged, url }
 const mergePrompted = new Set();   // "recordId:prNumber" already offered this load (no 60s re-nag)
@@ -46,18 +49,36 @@ function makeNonce() {
 function getPromoted() { return ctx.globalState.get(PROMO_KEY, {}) || {}; }
 function setPromoted(o) { ctx.globalState.update(PROMO_KEY, o); }
 
+// A session's worktree can be removed outside the panel (git worktree remove,
+// a cleanup script), which leaves the record pointing at nothing. Terminals are
+// never launched into a missing cwd — VS Code would create a permanently broken
+// tab that it then revives, and fails to launch, on every future restart.
+function dirExists(p) {
+  try { return !!p && fs.statSync(p).isDirectory(); } catch (_) { return false; }
+}
+
+// Terminal names this panel has created. VS Code hands back only the name of a
+// revived terminal, so this registry is how we recognise our own leftovers
+// after a restart — including ones whose session record is long gone.
+function getOwnedTerms() { return ctx.globalState.get(TERMS_KEY, []) || []; }
+function setOwnedTerms(names) { ctx.globalState.update(TERMS_KEY, Array.from(new Set(names)).slice(-200)); }
+function ownTerm(name) { setOwnedTerms(getOwnedTerms().concat(name)); }
+
 function persist() {
   const data = sessions.map((s) => ({
     id: s.id, agentId: s.agentId, cwd: s.cwd, label: s.label,
     sessionId: s.sessionId || null, createdAt: s.createdAt,
     repoRoot: s.repoRoot || null, branch: s.branch || null,
     worktreePath: s.worktreePath || null, isWorktree: !!s.isWorktree,
-    mergedHandledPr: s.mergedHandledPr || null,
+    mergedHandledPr: s.mergedHandledPr || null, termName: s.termName || null,
   }));
   ctx.globalState.update(STATE_KEY, data);
   refresh();
 }
 function refresh() { if (view) view.post(); }
+// What this session's terminal tab is called: the name it was created with,
+// falling back to the label for records saved before termName existed.
+const termNameOf = (rec) => rec.termName || rec.label;
 function findById(idOrNode) {
   const id = typeof idOrNode === 'string' ? idOrNode : (idOrNode && idOrNode.recId);
   return sessions.find((s) => s.id === id);
@@ -65,13 +86,42 @@ function findById(idOrNode) {
 
 // --- Terminal orchestration --------------------------------------------------
 function spawn(rec, command, isNew) {
+  if (!dirExists(rec.cwd)) { offerForgetMissing(rec); return; }
   const term = vscode.window.createTerminal({ name: rec.label, cwd: rec.cwd });
+  ours.add(term);
+  // A terminal keeps the name it was created with, even if the session is later
+  // renamed — remember it, so a restart matches terminals to records by what the
+  // tab is actually called rather than by a label two sessions can share.
+  rec.termName = rec.label;
+  ownTerm(rec.termName);
   live.set(rec.id, term);
   term.show(true);
   const autoRun = vscode.workspace.getConfiguration('agentsPanel').get('autoRunResume', true);
   if (command) term.sendText(command, isNew ? true : autoRun);
-  refresh();
+  persist();
   if (isNew) bindSession(rec);
+}
+
+// The session's directory is gone, so there is nothing to launch into. Offer to
+// drop the record rather than minting a terminal that can never start.
+async function offerForgetMissing(rec) {
+  const FORGET = 'Remove from list';
+  const choice = await vscode.window.showWarningMessage(
+    `"${rec.label}" can't start — its working directory no longer exists.`,
+    { modal: true, detail: `${rec.cwd}\n\nIt was removed outside the panel. Removing the record leaves the agent's transcript on disk.` },
+    FORGET);
+  if (choice !== FORGET) return;
+  if (rec.worktreePath && rec.repoRoot) await gitmod.pruneWorktrees(rec.repoRoot);
+  setOwnedTerms(getOwnedTerms().filter((n) => n !== termNameOf(rec)));
+  forget(rec);
+}
+// Drop a session record and everything keyed off it. Nothing on disk is touched.
+function forget(rec) {
+  sessions = sessions.filter((s) => s.id !== rec.id);
+  meta.delete(rec.id);
+  seenMtime.delete(rec.id); workingUntil.delete(rec.id); focusedAt.delete(rec.id);
+  if (selectedId === rec.id) selectedId = null;
+  persist();
 }
 // Poll for the agent's new session file and bind its id to this record. The file
 // isn't created until the first message lands, so binding succeeds only once the
@@ -109,6 +159,7 @@ function syncSelected(term) {
 // --- Background refresh ------------------------------------------------------
 async function refreshGit() {
   for (const rec of sessions) {
+    if (!dirExists(rec.cwd)) { meta.set(rec.id, { missing: true, isRepo: false }); continue; }
     const i = await gitmod.info(rec.cwd);
     const m = {
       isRepo: i.isRepo,
@@ -203,6 +254,9 @@ function computeCards() {
     const p = providers[rec.agentId] || {};
     const m = meta.get(rec.id) || {};
     const active = live.has(rec.id);
+    // The worktree can be deleted outside the panel; the record then has nothing
+    // to run in, so say so on the card instead of failing at launch time.
+    const missing = !dirExists(rec.cwd);
     const repoRoot = rec.repoRoot || m.root || null;
     const branch = m.branch || rec.branch || '';   // '' for a detached (new) worktree — no branch yet
     const promoted = repoRoot ? promo[repoRoot] : null;
@@ -215,7 +269,8 @@ function computeCards() {
     // status text shown inline on the branch row (line 2). An open PR is not
     // shown here — it renders as a right-aligned colored badge (see prBadge).
     let status = { kind: 'none', text: '' };
-    if (merged) status = { kind: 'merged', text: 'merged' };
+    if (missing) status = { kind: 'missing', text: 'folder missing' };
+    else if (merged) status = { kind: 'merged', text: 'merged' };
     else if (pr) status = { kind: 'pr', text: '' };
     else if (isMain && m.isWorktree) status = { kind: 'main', text: 'main' };
     else if (isMain) status = { kind: 'main', text: '' };            // root already reads "main" as its branch
@@ -270,6 +325,7 @@ function computeCards() {
       context,
       active,
       roll: rollKind(rec),   // 'work' | 'ask' | 'ready' | null — initial roll state (postActivity keeps it fresh)
+      missing,
       selected: rec.id === selectedId,
       updated,
       description: rec.label,
@@ -660,7 +716,15 @@ async function cmdRemove(node) {
   let removeWt = false, delBranch = false;
 
   const wtBranch = currentBranch(rec);
-  if (rec.worktreePath && rec.repoRoot) {
+  if (rec.worktreePath && rec.repoRoot && !dirExists(rec.worktreePath)) {
+    // The worktree is already gone — there is nothing to confirm deleting, only
+    // the record (and git's stale registry entry) to tidy up.
+    const ok = await vscode.window.showWarningMessage(
+      `Remove "${rec.label}" from the list?`,
+      { modal: true, detail: `Its worktree (${rec.worktreePath}) no longer exists.` }, 'Remove');
+    if (ok !== 'Remove') return;
+    await gitmod.pruneWorktrees(rec.repoRoot);
+  } else if (rec.worktreePath && rec.repoRoot) {
     const m = meta.get(rec.id) || {};
     const pr = wtBranch ? prCache.get(wtBranch) : null;
     const merged = !!(pr && pr.merged);
@@ -687,10 +751,8 @@ async function cmdRemove(node) {
     else if (delBranch && wtBranch) await gitmod.deleteBranch(rec.repoRoot, wtBranch);
   }
 
-  sessions = sessions.filter((s) => s.id !== rec.id);
-  meta.delete(rec.id);
-  seenMtime.delete(rec.id); workingUntil.delete(rec.id); focusedAt.delete(rec.id);
-  persist();
+  setOwnedTerms(getOwnedTerms().filter((n) => n !== termNameOf(rec)));
+  forget(rec);
 }
 
 // --- Sessions webview --------------------------------------------------------
@@ -764,6 +826,113 @@ class SessionsWebview {
   }
 }
 
+// --- Terminal adoption after a reload / restart -------------------------------
+// A plain window reload keeps the pty host alive, so the agent survives and its
+// terminal simply reconnects. A full restart does NOT: VS Code *revives* the tab
+// by starting a fresh shell in the saved cwd (or failing outright, "Starting
+// directory (cwd) … does not exist", when the worktree is gone). Both look the
+// same through the API — same name, same object — so the only reliable tell is
+// whether the agent process is still running under the terminal's shell.
+
+// pid -> command line, plus a ppid -> [pid] index, for walking a terminal's
+// process subtree. Full command lines (not just `comm`) so an agent started
+// through a wrapper — `node .../cli.js` — is still recognisable. POSIX only;
+// null on Windows or if `ps` fails, which callers read as "can't tell".
+function processTable() {
+  return new Promise((resolve) => {
+    if (process.platform === 'win32') { resolve(null); return; }
+    cp.execFile('ps', ['-axo', 'pid=,ppid=,command='], { maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      if (err) { resolve(null); return; }
+      const kids = new Map();
+      const cmd = new Map();
+      for (const line of String(stdout).split('\n')) {
+        const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+        if (!m) continue;
+        const pid = +m[1], ppid = +m[2];
+        cmd.set(pid, m[3]);
+        if (!kids.has(ppid)) kids.set(ppid, []);
+        kids.get(ppid).push(pid);
+      }
+      resolve({ kids, cmd });
+    });
+  });
+}
+// What is running under a terminal's shell: 'agent' when the agent CLI is in the
+// subtree (Claude is usually a direct child, but a wrapper or `npx` adds levels,
+// so walk it), 'busy' when something unrecognised is, 'idle' when nothing is —
+// which is what a revived shell, or one that failed to launch, looks like.
+function subtreeState(table, rootPid, agentId) {
+  const re = (providers[agentId] || {}).processMatch;
+  if (!table || !rootPid) return 'idle';
+  const isAgent = (pid) => re instanceof RegExp && re.test(table.cmd.get(pid) || '');
+  if (isAgent(rootPid)) return 'agent';   // a shell that exec'd straight into the agent
+  let busy = false;
+  const seen = new Set([rootPid]);
+  const queue = [rootPid];
+  while (queue.length && seen.size <= 5000) {
+    for (const kid of table.kids.get(queue.shift()) || []) {
+      if (seen.has(kid)) continue;
+      seen.add(kid);
+      busy = true;
+      if (isAgent(kid)) return 'agent';
+      queue.push(kid);
+    }
+  }
+  return busy ? 'busy' : 'idle';
+}
+// terminal.processId settles when the shell comes up; a terminal that failed to
+// launch can leave it pending, so don't let one hang startup.
+function pidOf(term) {
+  return Promise.race([
+    Promise.resolve(term.processId).catch(() => undefined),
+    new Promise((r) => setTimeout(() => r(undefined), 3000)),
+  ]);
+}
+
+// Match surviving terminals back to their sessions, and clear out the panel's
+// own dead ones. Adopting a revived-but-agentless shell used to mark the card
+// active, so clicking it focused an empty shell instead of resuming — and the
+// dead tabs, never disposed, were re-persisted and re-revived on every restart
+// until the terminal list filled up with broken duplicates.
+async function adoptTerminals(terms, fullSweep) {
+  if (!terms.length) { if (fullSweep) setOwnedTerms(sessions.map(termNameOf)); return; }
+  const [table, pids] = await Promise.all([processTable(), Promise.all(terms.map(pidOf))]);
+  // Ours to clean up: terminals we recorded creating, plus any named after a
+  // tracked session — the registry starts empty on upgrade, and the leftovers
+  // that prompted it are named after the sessions they belonged to.
+  const owned = new Set(getOwnedTerms().concat(sessions.map(termNameOf)));
+  const stale = [], kept = [];
+  for (let i = 0; i < terms.length; i++) {
+    const term = terms[i];
+    if (owned.has(term.name)) kept.push(term.name);
+    const rec = sessions.find((s) => termNameOf(s) === term.name && !live.has(s.id) && dirExists(s.cwd));
+    // No process table (Windows, or ps unavailable): keep the old name-only
+    // adoption and never dispose — a wrong guess there is cheaper than closing
+    // a terminal the user is using.
+    if (!table) { if (rec) live.set(rec.id, term); continue; }
+    // Anything still running under the shell keeps the terminal: the agent when
+    // we can name the process, otherwise whatever the user left running there,
+    // which is never worth closing on them.
+    if (subtreeState(table, pids[i], rec ? rec.agentId : null) !== 'idle') {
+      if (rec) live.set(rec.id, term);
+      continue;
+    }
+    // Idle: a shell VS Code revived with nothing behind it, or a tab whose
+    // launch failed outright. Ours to clean up; anyone else's to leave alone.
+    if (owned.has(term.name)) stale.push(term);
+  }
+  const gone = new Set(stale.map((t) => t.name));
+  for (const term of stale) { try { term.dispose(); } catch (_) { /* already gone */ } }
+  if (!fullSweep) return;
+  if (stale.length > 1) {
+    vscode.window.showInformationMessage(
+      `Agents Panel: closed ${stale.length} finished agent terminals left over from a previous session.`);
+  }
+  // Names that can still come back: current sessions, plus any of our terminals
+  // this sweep left open. Everything else was just disposed, so stop tracking it.
+  setOwnedTerms(sessions.map(termNameOf).concat(kept.filter((n) => !gone.has(n))));
+}
+
 // --- Activation --------------------------------------------------------------
 function activate(context) {
   ctx = context;
@@ -795,16 +964,24 @@ function activate(context) {
     vscode.commands.registerCommand('agentsPanel.reviewSession', cmdReviewSession),
   );
 
-  // On reload VSCode reconnects still-running terminals (persistent sessions keep
-  // the agent process alive), so adopt them as live, matched to their session.
-  // Clicking the card then FOCUSES the terminal instead of re-sending the agent's
-  // resume command — which, injected into an already-running agent, would be read
-  // as a prompt (e.g. Claude would receive a literal "claude --resume <id>").
-  for (const term of vscode.window.terminals) {
-    const rec = sessions.find((s) => s.label === term.name && !live.has(s.id));
-    if (rec) live.set(rec.id, term);
-  }
-  syncSelected(vscode.window.activeTerminal);
+  // Adopt the terminals whose agent is still running (a reload keeps them alive)
+  // and dispose the panel's leftovers from previous runs. Clicking an adopted
+  // card FOCUSES its terminal instead of re-sending the resume command — which,
+  // injected into an already-running agent, would be read as a prompt (Claude
+  // would receive a literal "claude --resume <id>"). Everything else falls back
+  // to a real resume, which is what actually restores a session after a restart.
+  adoptTerminals(vscode.window.terminals.slice(), true)
+    .then(() => { syncSelected(vscode.window.activeTerminal); refresh(); });
+
+  // Revival can also land just after the extension starts, and those terminals
+  // would otherwise miss the sweep above and linger to the next restart. Judge
+  // late arrivals we didn't create ourselves for a short while, giving each a
+  // moment to start its shell so a genuinely new terminal isn't read as idle.
+  const startedAt = Date.now();
+  context.subscriptions.push(vscode.window.onDidOpenTerminal((t) => {
+    if (ours.has(t) || Date.now() - startedAt > 20000) return;
+    setTimeout(() => { if (!ours.has(t)) adoptTerminals([t], false).then(refresh); }, 3000);
+  }));
 
   const gi = setInterval(() => refreshGit(), 12000);
   const pi = setInterval(() => refreshPR(), 60000);
