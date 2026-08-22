@@ -143,6 +143,22 @@ function bindSession(rec) {
   }, 1000);
 }
 const isActive = (rec) => live.has(rec.id);
+// Follow a `/clear` (or any fresh session started in the same terminal). Claude
+// mints a NEW session id/file on /clear, leaving the old file frozen mid-turn —
+// so a record pinned to it shows stale activity ("…" forever) and the wrong id.
+// For a LIVE session whose bound file has been superseded by a strictly newer
+// one in the same cwd, re-bind to the newest so activity/context/id track the
+// conversation that's actually running. Initial binding stays bindSession's job
+// (guarded by rec.sessionId) so we never race it onto a pre-existing session.
+function maybeRebind(rec) {
+  if (!rec.sessionId) return;
+  const p = providers[rec.agentId];
+  if (!p || typeof p.listSessions !== 'function') return;
+  const list = p.listSessions(rec.cwd);            // newest first
+  if (!list.length || list[0].id === rec.sessionId) return;
+  const bound = list.find((s) => s.id === rec.sessionId);
+  if (!bound || list[0].mtimeMs > bound.mtimeMs) { rec.sessionId = list[0].id; persist(); }
+}
 // A session's current branch: the live one (which follows in-terminal checkouts)
 // falling back to whatever was persisted. Detached worktrees have none until the
 // agent creates one during planning.
@@ -240,6 +256,7 @@ function pollActivity() {
   const working = [], asking = [], ready = [];
   for (const rec of sessions) {
     if (!live.has(rec.id)) continue;
+    maybeRebind(rec);   // follow a /clear before reading activity, so the roll tracks the live session
     let kind = rollKind(rec);
     if (kind === 'work') workingUntil.set(rec.id, now + WORK_GRACE_MS);
     else if ((workingUntil.get(rec.id) || 0) > now) kind = 'work';   // let the roll trail briefly

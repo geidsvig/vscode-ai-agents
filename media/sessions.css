@@ -85,11 +85,12 @@ button.new .plus { font-size: 15px; line-height: 1; }
    (PR/merged state is already shown by the [PR] badge and "merged" chip.) */
 .l2 .ctype { display: inline-flex; align-items: center; flex: none; }
 .l2 .ctype svg { width: 13px; height: 13px; display: block; }
-/* Branch icon is muted (timestamp color) by default, and lifts to the theme
-   accent only when this session is the main / active-for-testing checkout.
-   It deliberately does NOT use the session identity color. */
+/* Branch icon is muted (timestamp color) by default, and takes on the session
+   identity color (matching the rail + context-bar fill) only when this session
+   is set as the repo's main/root checkout — i.e. it can be tested there. An
+   isolated worktree stays muted. */
 .ctype { color: var(--vscode-descriptionForeground); }
-.ctype.is-main { color: var(--ap-accent); }
+.ctype.is-main { color: var(--session-color); }
 
 /* the session whose terminal is currently active — 1:1 with the focused terminal.
    Muted blue-gray outline + a barely-blue tint: reads as "selected", not "warning".
