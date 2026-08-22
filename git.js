@@ -5,18 +5,25 @@
 const cp = require('child_process');
 const path = require('path');
 
-function run(cmd, args, cwd) {
+function run(cmd, args, cwd, opts) {
+  const o = opts || {};
+  // Network calls run with no terminal, so a credential prompt would hang the
+  // panel forever. Make git fail fast instead, and cap it with a timeout.
+  const env = o.noPrompt
+    ? { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', SSH_ASKPASS: 'echo' }
+    : process.env;
   return new Promise((resolve) => {
-    cp.execFile(cmd, args, { cwd, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    cp.execFile(cmd, args, { cwd, env, timeout: o.timeout || 0, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
       resolve({
         code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
         stdout: (stdout || '').trim(),
         stderr: (stderr || '').trim(),
+        timedOut: !!(err && err.killed),
       });
     });
   });
 }
-const git = (args, cwd) => run('git', args, cwd);
+const git = (args, cwd, opts) => run('git', args, cwd, opts);
 const gh = (args, cwd) => run('gh', args, cwd);
 
 async function isRepo(cwd) {
@@ -78,12 +85,57 @@ async function branchExists(root, branch) {
 const slugify = (s) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'session';
 
-// Create <root>/.agents/<repo>-session-<N> as a DETACHED worktree at the default
-// branch's tip. Detached because a worktree can't share `main` with the root, and
-// the branch is chosen later (in conversation). N starts at `startN` and bumps
-// past any existing dir. Returns { ok, wtPath, name, error }.
-async function addWorktree(root, startN) {
+// Bring the default branch up to date with the remote before anything is cut
+// from it, so a new session doesn't start life behind origin. Best-effort: a
+// missing remote, no network, or a dirty/diverged local branch all degrade to
+// "use what we have" rather than blocking session creation.
+// Returns { ok, base, ref, behind, local, error } where `ref` is what callers
+// should branch from and `local` says what happened to the local branch:
+//   'updated' | 'current' | 'dirty' | 'diverged' | 'checked-out' | 'no-remote'
+const FETCH_TIMEOUT_MS = 20000;
+async function syncDefaultBranch(root) {
   const base = await defaultBranch(root);
+  if (!(await hasRemote(root))) return { ok: true, base, ref: base, behind: 0, local: 'no-remote' };
+
+  const f = await git(['fetch', '--quiet', 'origin', base], root, { timeout: FETCH_TIMEOUT_MS, noPrompt: true });
+  if (f.code !== 0) {
+    const error = f.timedOut ? `fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s` : (f.stderr || 'git fetch failed');
+    return { ok: false, base, ref: base, behind: 0, local: 'no-remote', error };
+  }
+  // origin may not carry this branch at all (never pushed) — nothing to sync to.
+  const ref = `origin/${base}`;
+  const has = await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], root);
+  if (has.code !== 0) return { ok: true, base, ref: base, behind: 0, local: 'no-remote' };
+
+  const behind = (await commitsAhead(root, base, ref)) || 0;
+  return { ok: true, base, ref, behind, local: await fastForwardLocal(root, base, ref, behind) };
+}
+
+// Move the local default branch up to the remote tip. Two cases: it's checked
+// out in the repo root (fast-forward the working tree), or it isn't (update the
+// ref directly via a self-refspec fetch, which needs no checkout).
+async function fastForwardLocal(root, base, ref, behind) {
+  if (behind === 0) return 'current';
+  const cur = await info(root);
+  if (cur.isRepo && !cur.detached && cur.branch === base) {
+    if (cur.dirty) return 'dirty';                       // never touch a dirty working tree
+    const m = await git(['merge', '--ff-only', ref], root);
+    return m.code === 0 ? 'updated' : 'diverged';
+  }
+  // Fails if `base` is checked out in some other worktree; harmless either way,
+  // since the new worktree is cut from `ref`, not from the local branch.
+  const r = await git(['fetch', 'origin', `${base}:${base}`], root, { timeout: FETCH_TIMEOUT_MS, noPrompt: true });
+  return r.code === 0 ? 'updated' : 'checked-out';
+}
+
+// Create <root>/.agents/<repo>-session-<N> as a DETACHED worktree at `baseRef`
+// (default: the local default branch — callers should pass the remote-tracking
+// ref from syncDefaultBranch so the session starts from an up-to-date base).
+// Detached because a worktree can't share `main` with the root, and the branch
+// is chosen later (in conversation). N starts at `startN` and bumps past any
+// existing dir. Returns { ok, wtPath, name, error }.
+async function addWorktree(root, startN, baseRef) {
+  const base = baseRef || (await defaultBranch(root));
   const repo = path.basename(root);
   const fs = require('fs');
   let n = Math.max(1, startN || 1);
@@ -218,6 +270,6 @@ async function prComments(cwd, branch) {
 
 module.exports = {
   isRepo, info, mainRoot, hasRemote, defaultBranch, slugify,
-  addWorktree, promote, returnToMain, isPromotedAt, removeWorktree, pruneWorktrees, deleteBranch,
+  syncDefaultBranch, addWorktree, promote, returnToMain, isPromotedAt, removeWorktree, pruneWorktrees, deleteBranch,
   pushBranch, commitsAhead, prView, prCreate, prComments,
 };

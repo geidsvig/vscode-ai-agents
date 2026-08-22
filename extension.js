@@ -398,6 +398,34 @@ function seedManualOrder() {
 }
 
 // --- Session creation --------------------------------------------------------
+// Say something only when the base wasn't simply brought up to date: a failed
+// fetch still yields a worktree (from the local branch), but the user should
+// know it may be behind. Everything else is silent — a clean sync is the norm.
+function reportSync(sync) {
+  if (!sync) return;
+  if (!sync.ok) {
+    vscode.window.showWarningMessage(
+      `Couldn't refresh ${sync.base} from origin — the session starts from your local ${sync.base}, ` +
+      `which may be behind. (${sync.error})`);
+    return;
+  }
+  if (sync.local === 'dirty') {
+    vscode.window.showWarningMessage(
+      `${sync.base} is ${sync.behind} commit(s) behind origin and has uncommitted changes in the repo root, ` +
+      `so it was left alone. The new session still starts from origin/${sync.base}.`);
+    return;
+  }
+  if (sync.local === 'diverged') {
+    vscode.window.showWarningMessage(
+      `Local ${sync.base} has diverged from origin and couldn't fast-forward. ` +
+      `The new session starts from origin/${sync.base}.`);
+    return;
+  }
+  if (sync.behind > 0) {
+    vscode.window.showInformationMessage(`Updated ${sync.base} — ${sync.behind} new commit(s) from origin.`);
+  }
+}
+
 async function createSession(agentId, dir, desc) {
   const provider = providers[agentId];
   if (!provider || !provider.available) { vscode.window.showErrorMessage('Unknown or unavailable agent.'); return; }
@@ -407,10 +435,19 @@ async function createSession(agentId, dir, desc) {
   if (await gitmod.isRepo(dir)) {
     const root = (await gitmod.mainRoot(dir)) || dir;
     const startN = sessions.filter((s) => s.repoRoot === root).length + 1;   // <repo>-session-<N>
-    const res = await vscode.window.withProgress(
+    // Refresh the default branch first, then cut the worktree from the remote
+    // tip — otherwise a session starts on whatever `main` this clone last saw,
+    // which is stale the moment anything merges.
+    const { sync, res } = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: 'Creating session worktree…' },
-      () => gitmod.addWorktree(root, startN));
+      async (progress) => {
+        progress.report({ message: 'Updating ' + (await gitmod.defaultBranch(root)) + '…' });
+        const sync = await gitmod.syncDefaultBranch(root);
+        progress.report({ message: 'Adding worktree…' });
+        return { sync, res: await gitmod.addWorktree(root, startN, sync.ref) };
+      });
     if (!res.ok) { vscode.window.showErrorMessage('Worktree failed: ' + res.error); return; }
+    reportSync(sync);
     // Detached — no branch yet; the agent creates one during planning.
     cwd = res.wtPath; repoRoot = root; worktreePath = res.wtPath; isWorktree = true;
   }
