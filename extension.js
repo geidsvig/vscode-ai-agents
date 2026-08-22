@@ -141,20 +141,26 @@ async function refreshPR() {
   refresh();
 }
 
-// --- Working / waiting indicator ---------------------------------------------
-// Each live session shows one of two rolls: an animated "…" while the agent is
-// working, or a static "???" while it's waiting on the user (a question, a plan
-// to approve, a permission prompt, or a finished turn). Only live sessions get a
-// roll. We post a tiny two-set message rather than a full state refresh, so cards
-// aren't rebuilt mid-animation (which would reset the CSS roll).
-const WORK_GRACE_MS = 2500;    // let the "…" roll trail this long before flipping to "???" (smooths transitions)
+// --- Activity roll ------------------------------------------------------------
+// Each live session shows one of three rolls: an animated "…" while the agent is
+// working, a static "???" while it's blocked on the user (a question, a plan to
+// approve, a permission prompt), or a static ":>" when it's done and idle at the
+// prompt (free for a new command). Only live sessions get a roll. We post a tiny
+// id-set message rather than a full state refresh, so cards aren't rebuilt
+// mid-animation (which would reset the CSS roll).
+const WORK_GRACE_MS = 2500;    // let the "…" roll trail this long before flipping to "???" / ":>" (smooths transitions)
 const PENDING_WAIT_MS = 5000;  // a tool pending (no progress) this long is treated as a permission prompt -> waiting
 
-// Classify a live session's roll from the provider's activity state. Returns
-// 'work' | 'wait' | null (null = no roll). The ambiguous 'pending' state (a tool
-// call that could be running or blocked on approval) is resolved by how long it
-// has sat without progress. Does NOT apply the work-trailing grace — that's
-// pollActivity's job, so a one-off full render doesn't linger.
+// Classify a live session's roll from the provider's activity state. The
+// ambiguous 'pending' state (a tool call that could be running or blocked on a
+// permission prompt) is resolved by how long it has sat without progress. Does
+// NOT apply the work-trailing grace — that's pollActivity's job, so a one-off
+// full render doesn't linger.
+// Returns 'work' | 'ask' | 'ready' | null:
+//   work  → "…"  the agent is actively working
+//   ask   → "???" blocked on the user (a question, a plan, or a permission
+//           prompt) — a response is required before it can continue
+//   ready → ":>" done and idle at the prompt — free for any new command
 function rollKind(rec) {
   if (!live.has(rec.id)) return null;                    // only live sessions roll
   const p = providers[rec.agentId];
@@ -163,29 +169,31 @@ function rollKind(rec) {
   if (typeof p.activity === 'function') {
     const a = p.activity(rec.cwd, rec.sessionId);
     if (a.status === 'working') return 'work';
-    if (a.status === 'pending') return (now - a.mtimeMs > PENDING_WAIT_MS) ? 'wait' : 'work';
-    return 'wait';                                        // 'waiting' (blocked on user) or 'idle' (turn done)
+    if (a.status === 'waiting') return 'ask';            // blocked: question / plan approval
+    if (a.status === 'pending') return (now - a.mtimeMs > PENDING_WAIT_MS) ? 'ask' : 'work';  // permission prompt once stale
+    return 'ready';                                       // idle: turn done, awaiting a new command
   }
-  if (typeof p.lastActivity === 'function') {            // fallback: mtime-delta guess, work-only
+  if (typeof p.lastActivity === 'function') {            // fallback: mtime-delta guess (can't detect "blocked")
     const t = p.lastActivity(rec.cwd, rec.sessionId);
-    if (t) { const prev = seenMtime.get(rec.id); seenMtime.set(rec.id, t); return prev !== undefined && t > prev ? 'work' : null; }
+    if (t) { const prev = seenMtime.get(rec.id); seenMtime.set(rec.id, t); return prev !== undefined && t > prev ? 'work' : 'ready'; }
   }
-  return null;
+  return 'ready';
 }
 
 function pollActivity() {
   const now = Date.now();
-  const working = [], waiting = [];
+  const working = [], asking = [], ready = [];
   for (const rec of sessions) {
     if (!live.has(rec.id)) continue;
     let kind = rollKind(rec);
     if (kind === 'work') workingUntil.set(rec.id, now + WORK_GRACE_MS);
     else if ((workingUntil.get(rec.id) || 0) > now) kind = 'work';   // let the roll trail briefly
     if (kind === 'work') working.push(rec.id);
-    else if (kind === 'wait') waiting.push(rec.id);
+    else if (kind === 'ask') asking.push(rec.id);
+    else if (kind === 'ready') ready.push(rec.id);
   }
-  const key = 'w' + working.join(',') + '|q' + waiting.join(',');
-  if (key !== lastWorkingKey) { lastWorkingKey = key; if (view) view.postActivity(working, waiting); }
+  const key = 'w' + working.join(',') + '|a' + asking.join(',') + '|r' + ready.join(',');
+  if (key !== lastWorkingKey) { lastWorkingKey = key; if (view) view.postActivity(working, asking, ready); }
 }
 
 // --- View model --------------------------------------------------------------
@@ -261,7 +269,7 @@ function computeCards() {
       checkout,
       context,
       active,
-      roll: rollKind(rec),   // 'work' | 'wait' | null — initial roll state (postActivity keeps it fresh)
+      roll: rollKind(rec),   // 'work' | 'ask' | 'ready' | null — initial roll state (postActivity keeps it fresh)
       selected: rec.id === selectedId,
       updated,
       description: rec.label,
@@ -702,10 +710,10 @@ class SessionsWebview {
   post() {
     if (this.view) this.view.webview.postMessage({ type: 'state', ...computeState() });
   }
-  // Lightweight working/waiting update — toggles the roll on existing cards
+  // Lightweight roll update — toggles working/asking/ready on existing cards
   // without rebuilding them (a full post() would reset the CSS animation).
-  postActivity(working, waiting) {
-    if (this.view) this.view.webview.postMessage({ type: 'activity', working, waiting });
+  postActivity(working, asking, ready) {
+    if (this.view) this.view.webview.postMessage({ type: 'activity', working, asking, ready });
   }
   requestForm() {
     vscode.commands.executeCommand('agentsPanel.sessions.focus');

@@ -77,9 +77,12 @@ button.new .plus { font-size: 15px; line-height: 1; }
   color: var(--vscode-descriptionForeground); opacity: 0.8; white-space: nowrap;
 }
 
-/* activity glyph — animated "…" while working, static "???" while waiting on you */
+/* activity glyph — three states:
+     working "…"  animated, white         — the agent is doing work
+     asking  "???" static, blue accent    — blocked, needs your input to continue
+     ready   ":>" static, muted           — done and idle, free for a new command  */
 .lag .work { display: none; flex: none; }
-.card.working .lag .work, .card.waiting .lag .work {
+.card.working .lag .work, .card.asking .lag .work, .card.ready .lag .work {
   display: inline-block;
   min-width: 1.6em;   /* hold width so the row doesn't jitter across frames / states */
   font-family: var(--vscode-editor-font-family, monospace);
@@ -93,12 +96,12 @@ button.new .plus { font-size: 15px; line-height: 1; }
   white-space: pre;
   animation: work-roll 0.8s steps(1, end) infinite;
 }
-/* waiting: the agent is blocked on the user (question / plan / permission / done) */
-.card.waiting .lag .work { color: var(--ap-accent); }   /* blue = "your turn / interactive" */
-.card.waiting .lag .work::after { content: '???'; }
-/* if a card is somehow both, "waiting" wins (it's the actionable state) */
-.card.waiting.working .lag .work { color: var(--ap-accent); }
-.card.waiting.working .lag .work::after { content: '???'; animation: none; }
+/* asking: blocked on the user — a question, a plan to approve, a permission prompt */
+.card.asking .lag .work { color: var(--ap-accent); }   /* blue = action required from you */
+.card.asking .lag .work::after { content: '???'; }
+/* ready: turn finished, waiting at the prompt for whatever you want next */
+.card.ready .lag .work { color: var(--vscode-descriptionForeground); }   /* muted = passive, not an alert */
+.card.ready .lag .work::after { content: ':>'; }
 @keyframes work-roll {
   0%   { content: '...'; }
   25%  { content: ' ..'; }

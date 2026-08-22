@@ -13,7 +13,7 @@
   window.addEventListener('message', (e) => {
     const d = e.data || {};
     if (d.type === 'state') { agents = d.agents || []; folders = d.folders || []; render(d.cards || []); }
-    else if (d.type === 'activity') { applyActivity(d.working || [], d.waiting || []); }
+    else if (d.type === 'activity') { applyActivity(d.working || [], d.asking || [], d.ready || []); }
     else if (d.type === 'openForm') { openNewForm(); }
     else if (d.type === 'browsed') { onBrowsed(d.path); }
   });
@@ -93,24 +93,30 @@
     for (const c of cards) root.appendChild(cardEl(c));
   }
 
-  // Toggle the working "…" / waiting "???" roll on already-rendered cards without
-  // rebuilding them (rebuilding would restart the CSS animation).
-  function applyActivity(workIds, waitIds) {
-    const w = new Set(workIds), q = new Set(waitIds);
+  // Toggle the working "…" / asking "???" / ready ":>" roll on already-rendered
+  // cards without rebuilding them (rebuilding would restart the CSS animation).
+  function applyActivity(workIds, askIds, readyIds) {
+    const w = new Set(workIds), a = new Set(askIds), r = new Set(readyIds);
     for (const node of root.querySelectorAll('.card')) {
-      const working = w.has(node.dataset.id);
-      const waiting = q.has(node.dataset.id);
+      const id = node.dataset.id;
+      const working = w.has(id), asking = a.has(id), ready = r.has(id);
       node.classList.toggle('working', working);
-      node.classList.toggle('waiting', waiting);
+      node.classList.toggle('asking', asking);
+      node.classList.toggle('ready', ready);
       const work = node.querySelector('.lag .work');
-      if (work) work.title = waiting ? 'Waiting for your input' : 'Agent is working…';
+      if (work) work.title = rollTitle(asking ? 'ask' : ready ? 'ready' : 'work');
     }
+  }
+  function rollTitle(kind) {
+    return kind === 'ask' ? 'Waiting for your input to continue'
+      : kind === 'ready' ? 'Done — ready for a new command'
+      : 'Agent is working…';
   }
 
   function cardEl(c) {
     const kind = c.status ? c.status.kind : 'none';
     const card = el('div', 'card ' + (c.active ? 'active' : 'inactive') + (c.selected ? ' selected' : '') +
-      (c.roll === 'work' ? ' working' : c.roll === 'wait' ? ' waiting' : ''));
+      (c.roll === 'work' ? ' working' : c.roll === 'ask' ? ' asking' : c.roll === 'ready' ? ' ready' : ''));
     card.dataset.id = c.id;
 
     // Row 1: project ............................. [last updated]
@@ -169,11 +175,11 @@
       lag.appendChild(el('span', 'agent', c.agentLabel || c.agentId));
     }
     if (c.model) lag.appendChild(el('span', 'agent model', c.model));
-    // Activity glyph: animated "…" while working, static "???" while waiting on the
-    // user. Always in the DOM; CSS reveals it via the .working / .waiting class, so
-    // toggling those (via the light 'activity' message) never rebuilds the card.
+    // Activity glyph: "…" working, "???" blocked on you, ":>" done/idle. Always in
+    // the DOM; CSS reveals it via the .working / .asking / .ready class, so toggling
+    // those (via the light 'activity' message) never rebuilds the card.
     const work = el('span', 'work');
-    work.title = c.roll === 'wait' ? 'Waiting for your input' : 'Agent is working…';
+    work.title = rollTitle(c.roll);
     lag.appendChild(work);
     if (c.sessionShort) {
       const sid = el('span', 'sid', c.sessionShort);
